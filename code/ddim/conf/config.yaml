@@ -1,0 +1,18 @@
+# ddim — VP diffusion, deterministic DDIM sampler.
+# Composes the shared groups in common/conf; everything below is ddim-specific or an override.
+defaults:
+  - base
+  - sweep: full
+  - classifier: mlp
+  - override hydra/job_logging: disabled
+  - _self_
+
+hydra:
+  searchpath:
+    - pkg://common.conf
+
+process: ddim
+
+ddim:
+  beta_min: 0.1             # continuous VP schedule, abar_T ~ 4e-5 for any T
+  beta_max: 20.0

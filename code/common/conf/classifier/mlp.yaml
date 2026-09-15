@@ -1,0 +1,14 @@
+# @package classifier
+# the universal-approximator ceiling (the headline numbers)
+_shared: &defaults     # merged into every model entry below
+  hidden: 512
+  depth: 4
+  degree: 3
+  epochs: 30
+  batch: 2048
+  lr: 0.003
+  weight_decay: 0.0001
+  ensemble: 3
+primary: mlp              # model that feeds the heatmaps / table / budget curves
+models:
+  - {name: mlp, arch: mlp, <<: *defaults}

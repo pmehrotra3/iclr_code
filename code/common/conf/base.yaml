@@ -1,0 +1,84 @@
+# =====================================================================================
+#  Shared defaults for every process folder. A process config (ddim/conf/config.yaml,
+#  flow/conf/config.yaml) composes this file, picks a sweep and a classifier preset, and
+#  adds its own knobs. Override anything on the command line:
+#     python code/ddim/main.py sweep=quick classifier=ladder stages=[evaluate,visualize]
+# =====================================================================================
+
+process: ???                # set by the process folder (ddim | flow | ...)
+
+# stages to run, in order:
+#   train | evaluate | merge | seedmap | visualize      (seed classifier on learned-sampler labels)
+#   atlas | atlas_merge | atlas_viz                     (ring atlas: true-score backtrack -> predictor,
+#                                                        scored on the learned sampler, swept over T)
+stages: [train, evaluate, visualize]
+
+run_tag: ${now:%Y-%m-%d}    # atlas results/figures go under output|visualization/<run_tag>/<process>/
+
+device: auto                # auto | cpu | cuda
+seed: 0
+
+# ------------------------------------------------------------------ reference GMM
+data:
+  sigma: 0.1                # within-mode std
+  radius: 2.0               # sphere radius the modes live on
+  m_mult: 1.0               # min-separation multiplier
+  mass_q: 0.99              # mode core mass fraction (defines R99)
+
+# ------------------------------------------------------------------ training the process
+train:
+  force_retrain: false
+  base_steps: 3000          # scaled by (1 + d/16)(1 + K/16)
+  lr: 0.001
+  batch: 512
+  probe_n: 10000
+  hall_target: 0.03         # retrain with more steps until the hallucination rate <= this
+  step_growth: 1.7
+  max_attempts: 6
+  net: {h: 256, nb: 4, td: 128}   # ScoreNet backbone
+
+# ------------------------------------------------------------------ evaluation
+eval:
+  n_eval: 20000             # held-out seeds every predictor is scored on
+  labels: learned           # learned | true  -- whose fate is the ground truth?
+                            #   learned: the trained model's sampler (the default experiment)
+                            #   true   : the analytic-field sampler (control: how predictable is
+                            #            fate when the score is exact?)
+  analytic: true            # also score the analytic-field forward pass as a predictor
+  tag: ""                   # results file suffix -> output/<process>/results_<tag>.json
+  seed_offset: 1000         # training seeds are drawn from seed + seed_offset
+
+# ------------------------------------------------------------------ ring atlas (stage: atlas)
+anchors:
+  n_per_mode: 500           # data-space anchors uniform in each mode's R99 ball (label = mode)
+  shell_frac: 0.5           # plus shell_frac * n_per_mode per mode in the shell R99..(1+shell_w) R99
+  shell_w: 1.0              #   (label = hallucination)
+  seed: 0
+  roundtrip: true           # also report how many anchors return to their label under true_forward
+  rings:                    # alternative anchor set used by classifiers with `anchors: rings` (altered_knn):
+    n_rings: 5              #   concentric spheres per mode, radii R99 * r_max * j / n_rings, label = mode,
+    r_max: 1.5              #   NO hallucination class; each anchor carries a confidence weight
+    weight: linear          #   linear: 1 - (1 - w_min) r / (r_max R99)  |  gaussian: exp(-r^2 / 2 sigma^2)
+    w_min: 0.2
+  n_calibrate: 5000         # seeds labeled by the true score to calibrate altered_knn's threshold=auto
+
+# ------------------------------------------------------------------ d=2 seed-space maps
+seedmap:
+  K: [4, 8, 16]             # which K to draw (d = 2 only)
+  n_grid: 700
+  extent: 3.5               # window [-extent, extent]^2
+  budget: 1000000           # labeled seeds used to fit each classifier panel
+  models: all               # all | list of classifier names to draw
+
+# ------------------------------------------------------------------ paths (repo-root relative)
+paths:
+  root: ${oc.env:ATLAS_ROOT,${oc.env:PWD}}
+  checkpoints: ${paths.root}/checkpoints
+  output: ${paths.root}/output
+  viz: ${paths.root}/visualization
+
+hydra:
+  run:
+    dir: ${paths.output}/hydra/${process}/${now:%Y-%m-%d_%H-%M-%S}
+  job:
+    chdir: false

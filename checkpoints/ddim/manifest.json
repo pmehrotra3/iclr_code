@@ -1,0 +1,14 @@
+{
+  "2_4": {
+    "d": 2,
+    "K": 4,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/ddim/model_d2_K4.pt",
+    "status": "cached"
+  },
+  "8_4": {
+    "d": 8,
+    "K": 4,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/ddim/model_d8_K4.pt",
+    "status": "cached"
+  }
+}

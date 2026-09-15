@@ -1,0 +1,27 @@
+# @package classifier
+# boundary-geometry ladder: linear -> radial -> quadratic -> polar poly (deg 1..8) -> mlp
+_shared: &defaults     # merged into every model entry below
+  hidden: 256
+  depth: 4
+  degree: 3
+  epochs: 30
+  batch: 2048
+  lr: 0.003
+  weight_decay: 0.0001
+  ensemble: 3
+  k: 10
+  bandwidth: 1.0
+primary: mlp
+models:
+  - {name: knn,       arch: knn, <<: *defaults}
+  - {name: kernel,    arch: kernel, <<: *defaults}
+  - {name: linear,    arch: linear,    lr: 0.03, <<: *defaults}
+  - {name: margin,    arch: margin,    lr: 0.03, <<: *defaults}
+  - {name: radial,    arch: radial,    lr: 0.03, <<: *defaults}
+  - {name: quadratic, arch: quadratic, lr: 0.03, <<: *defaults}
+  - {name: polar1,    arch: polar, degree: 1, <<: *defaults}
+  - {name: polar2,    arch: polar, degree: 2, <<: *defaults}
+  - {name: polar3,    arch: polar, degree: 3, <<: *defaults}
+  - {name: polar4,    arch: polar, degree: 4, <<: *defaults}
+  - {name: polar8,    arch: polar, degree: 8, <<: *defaults}
+  - {name: mlp,       arch: mlp, hidden: 512, <<: *defaults}

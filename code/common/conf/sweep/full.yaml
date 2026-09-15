@@ -1,0 +1,8 @@
+# @package sweep
+# the paper grid
+d: [2, 4, 8, 16, 32]
+K: [2, 4, 8, 16]
+budgets: [200000, 1000000, 4000000]   # labeled-seed budgets for the classifiers
+T_train: 100                          # steps of the learned sampler
+T_true: 100                           # steps of the analytic-field sampler (evaluate / seedmap)
+T_atlas: ${range:50,1001,50}          # T values of the true-score backtrack (atlas stage)

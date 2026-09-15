@@ -1,0 +1,8 @@
+# @package sweep
+# smoke test: three cells, one small budget
+d: [2, 8]
+K: [4]
+budgets: [200000]
+T_train: 100
+T_true: 100
+T_atlas: [50, 100]

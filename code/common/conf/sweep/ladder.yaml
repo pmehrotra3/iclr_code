@@ -1,0 +1,8 @@
+# @package sweep
+# full grid at the single 1M budget (what the capacity ladder was run at)
+d: [2, 4, 8, 16, 32]
+K: [2, 4, 8, 16]
+budgets: [1000000]
+T_train: 100
+T_true: 100
+T_atlas: ${range:50,1001,50}

@@ -1,0 +1,15 @@
+# @package classifier
+# the interpretable model: degree-p polynomial in (direction, radius) + margin band
+_shared: &defaults     # merged into every model entry below
+  hidden: 256               # number of linear forms (Waring rank)
+  depth: 4
+  degree: 8
+  epochs: 30
+  batch: 2048
+  lr: 0.003
+  weight_decay: 0.0001
+  ensemble: 3
+primary: polar8
+models:
+  - {name: polar8, arch: polar, <<: *defaults}
+  - {name: mlp,    arch: mlp, hidden: 512, <<: *defaults}

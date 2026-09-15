@@ -1,0 +1,18 @@
+# flow — Flow Matching, OT conditional path (Lipman et al. 2022).
+# Composes the shared groups in common/conf; everything below is flow-specific or an override.
+defaults:
+  - base
+  - sweep: full
+  - classifier: mlp
+  - override hydra/job_logging: disabled
+  - _self_
+
+hydra:
+  searchpath:
+    - pkg://common.conf
+
+process: flow
+
+flow:
+  sigma_min: 0.0001         # sigma_min in Eq. 20-23
+  solver: euler             # euler | midpoint | rk4
