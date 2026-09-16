@@ -50,7 +50,8 @@ eval:
 
 # ------------------------------------------------------------------ ring atlas (stage: atlas)
 anchors:
-  n_per_mode: 500           # data-space anchors uniform in each mode's R99 ball (label = mode)
+  budgets: [125, 250, 500, 1000]   # disk anchors per mode; EVERY budget is fitted and the best is
+                            #   reported per (d, K) cell, with the winning count shown in the figures
   shell_frac: 0.5           # plus shell_frac * n_per_mode per mode in the shell R99..(1+shell_w) R99
   shell_w: 1.0              #   (label = hallucination)
   seed: 0

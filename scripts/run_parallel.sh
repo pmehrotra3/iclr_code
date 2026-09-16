@@ -28,3 +28,5 @@ for d in $dims; do
 done
 wait
 python "code/$proc/main.py" "$@" "stages=[$FINAL_STAGES]" 2>&1 | tee "output/_logs/${proc}_merge_viz.log"
+rm -rf "output/_parts/$proc"   # merged into output/$proc; the shards are byte-identical duplicates
+
