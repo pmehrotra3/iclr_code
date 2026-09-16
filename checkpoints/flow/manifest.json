@@ -1,8 +1,122 @@
 {
+  "2_2": {
+    "d": 2,
+    "K": 2,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d2_K2_T150.pt",
+    "status": "cached"
+  },
   "2_4": {
     "d": 2,
     "K": 4,
-    "path": "/home/pmehrotra3/workspace/iclr_code/data/flow/checkpoints/model_d2_K4.pt",
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d2_K4_T150.pt",
+    "status": "cached"
+  },
+  "2_8": {
+    "d": 2,
+    "K": 8,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d2_K8_T150.pt",
+    "status": "cached"
+  },
+  "2_16": {
+    "d": 2,
+    "K": 16,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d2_K16_T150.pt",
+    "status": "cached"
+  },
+  "4_2": {
+    "d": 4,
+    "K": 2,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d4_K2_T150.pt",
+    "status": "cached"
+  },
+  "4_4": {
+    "d": 4,
+    "K": 4,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d4_K4_T150.pt",
+    "status": "cached"
+  },
+  "4_8": {
+    "d": 4,
+    "K": 8,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d4_K8_T150.pt",
+    "status": "cached"
+  },
+  "4_16": {
+    "d": 4,
+    "K": 16,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d4_K16_T150.pt",
+    "status": "cached"
+  },
+  "8_2": {
+    "d": 8,
+    "K": 2,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d8_K2_T150.pt",
+    "status": "cached"
+  },
+  "8_4": {
+    "d": 8,
+    "K": 4,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d8_K4_T150.pt",
+    "status": "cached"
+  },
+  "8_8": {
+    "d": 8,
+    "K": 8,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d8_K8_T150.pt",
+    "status": "cached"
+  },
+  "8_16": {
+    "d": 8,
+    "K": 16,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d8_K16_T150.pt",
+    "status": "cached"
+  },
+  "16_2": {
+    "d": 16,
+    "K": 2,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d16_K2_T150.pt",
+    "status": "cached"
+  },
+  "16_4": {
+    "d": 16,
+    "K": 4,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d16_K4_T150.pt",
+    "status": "cached"
+  },
+  "16_8": {
+    "d": 16,
+    "K": 8,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d16_K8_T150.pt",
+    "status": "cached"
+  },
+  "16_16": {
+    "d": 16,
+    "K": 16,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d16_K16_T150.pt",
+    "status": "cached"
+  },
+  "32_2": {
+    "d": 32,
+    "K": 2,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d32_K2_T150.pt",
+    "status": "cached"
+  },
+  "32_4": {
+    "d": 32,
+    "K": 4,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d32_K4_T150.pt",
+    "status": "cached"
+  },
+  "32_8": {
+    "d": 32,
+    "K": 8,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d32_K8_T150.pt",
+    "status": "cached"
+  },
+  "32_16": {
+    "d": 32,
+    "K": 16,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d32_K16_T150.pt",
     "status": "cached"
   }
 }

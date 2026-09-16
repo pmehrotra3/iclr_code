@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Ring-atlas T sweep for every process: learned sampler at T=150 (trained on demand, cached in
 # checkpoints/ unless train.force_retrain=true), true-score backtrack for T = 50..1000 step 50,
-# predictors fit on the anchors and scored on the learned sampler. Runs one process at a time,
-# each split by dimension across all GPUs.
-#   scripts/run_atlas.sh                                 # ddim then flow
+# predictors fit on the anchors and scored on the learned sampler. Every process runs at the
+# same time, each split by dimension across all GPUs (JOBS_PER_GPU jobs per GPU, default 3).
+#   scripts/run_atlas.sh                                 # ddim and flow concurrently
 #   scripts/run_atlas.sh ddim                            # one process
 #   scripts/run_atlas.sh ddim flow anchors.n_per_mode=1000 train.force_retrain=true
 # Results: output/<date>/<process>/T_<T>/results.{json,csv} + summary.csv
@@ -13,7 +13,10 @@ cd "$(dirname "$0")/.."
 procs=(); overrides=()
 for a in "$@"; do case $a in *=*) overrides+=("$a");; *) procs+=("$a");; esac; done
 [ ${#procs[@]} -gt 0 ] || procs=(ddim flow)
+export JOBS_PER_GPU=${JOBS_PER_GPU:-3}
 for proc in "${procs[@]}"; do
   PAR_STAGES=atlas FINAL_STAGES=atlas_merge,atlas_viz \
-    scripts/run_parallel.sh "$proc" sweep=atlas classifier=atlas "run_tag=$(date +%Y-%m-%d)" "${overrides[@]}"
+    scripts/run_parallel.sh "$proc" sweep=atlas classifier=atlas "run_tag=$(date +%Y-%m-%d)" "${overrides[@]}" \
+    > "output/_logs/run_atlas_$proc.out" 2>&1 &
 done
+wait

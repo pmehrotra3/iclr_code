@@ -57,7 +57,10 @@ class NonParametric(nn.Module):
         self.Y = nn.functional.one_hot(y + 1, self.K + 1).float()
         if self.arch == "kernel":
             D = torch.cdist(X[:4096], X)
-            D.fill_diagonal_(float("inf")) if D.shape[0] == D.shape[1] else None
+            # mask each row's self-pair; D is (m, n) with m = min(4096, n), so the self-
+            # distances sit at D[i, i] for i < m and fill_diagonal_ only covers the square case
+            i = torch.arange(D.shape[0], device=D.device)
+            D[i, i] = float("inf")
             nn_dist = D.min(1).values
             self.h = self.bandwidth * float(nn_dist[torch.isfinite(nn_dist)].median())
         return self

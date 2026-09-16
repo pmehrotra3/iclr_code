@@ -5,6 +5,8 @@ visualization/<run_tag>/<process>/:
   T_<T>/heatmap_full_acc     overall accuracy of the primary predictor over the (d, K) grid
   T_<T>/heatmap_hall_f1      hallucination F1 (one-vs-rest F1 of the hallucination class)
   T_<T>/heatmap_mode_f1      mode-basin F1 (macro F1 over the K mode classes)
+  T_<T>/heatmap_<key>_all    the same three metrics, one panel per predictor (all models +
+                             analytic) on a shared colour scale
   T_<T>/heatmap_roundtrip    fraction of anchors that return to their own label (sanity)
   T_<T>/anchors_K{K}         d = 2: the anchors in data space (left) and, after backtracking, in
                              seed space over the learned sampler's fate map (right)
@@ -21,7 +23,7 @@ import torch
 
 from common import checkpoint, utils
 from common.process import make_process
-from common.stages.visualize import heatmap_grid, _save, _new_fig, SERIES, MARKERS, INK2
+from common.stages.visualize import heatmap_grid, _save, _new_fig, SERIES, MARKERS, INK, INK2, BLUES
 from common.stages.atlas import run_dir, anchors_dir
 
 
@@ -67,6 +69,40 @@ def plot_anchors_d2(cfg, T, Ks, tdir):
     return made
 
 
+def heatmap_panels(grids, names, ds, Ks, title, viz_dir, stem, ncol=4):
+    """One annotated (K x d) heatmap per predictor, on a shared 0-1 colour scale."""
+    n = len(grids)
+    nrow = int(np.ceil(n / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(2.6 * ncol, 1.05 * len(Ks) * nrow + 0.9),
+                             squeeze=False)
+    im = None
+    for i, ax in enumerate(axes.ravel()):
+        if i >= n:
+            ax.axis("off")
+            continue
+        A = grids[i]
+        im = ax.imshow(A, vmin=0, vmax=1, aspect="auto", cmap=BLUES)
+        ax.grid(False)
+        ax.set_xticks(range(len(ds))); ax.set_xticklabels(ds, fontsize=7)
+        ax.set_yticks(range(len(Ks))); ax.set_yticklabels(Ks, fontsize=7)
+        if i // ncol == nrow - 1:
+            ax.set_xlabel("dimension $d$", fontsize=8)
+        if i % ncol == 0:
+            ax.set_ylabel("modes $K$", fontsize=8)
+        ax.set_title(names[i], loc="left", color=INK2, fontsize=9)
+        for j in range(len(Ks)):
+            for k in range(len(ds)):
+                if A[j, k] == A[j, k]:
+                    ax.text(k, j, f"{A[j, k] * 100:.0f}", ha="center", va="center", fontsize=6,
+                            color="white" if A[j, k] > 0.55 else INK)
+    fig.suptitle(title, fontsize=9, color=INK2)
+    fig.tight_layout(rect=(0, 0, 0.94, 1))
+    cax = fig.add_axes((0.955, 0.12, 0.012, 0.76))
+    cb = fig.colorbar(im, cax=cax)
+    cb.set_ticks([0, 0.5, 1.0]); cb.ax.tick_params(labelsize=7); cb.outline.set_visible(False)
+    return _save(fig, viz_dir, stem)
+
+
 def run(cfg):
     pname = cfg.process
     with open(os.path.join(run_dir(cfg), "atlas_results.json")) as f:
@@ -106,9 +142,14 @@ def run(cfg):
         tdir = os.path.join(viz_root, f"T_{T}")
         os.makedirs(tdir, exist_ok=True)
         sub = f"{primary}, true-score T={T}, anchors/mode: {n_pm} disk + {n_sh} shell"
+        panel_names = models + (["analytic"] if has_an else [])
         for key, title in [("full_acc", "overall accuracy (%)"), ("hall_f1", "hallucination $F_1$ (%)"),
                            ("mode_f1", "mode-basin $F_1$ (%)")]:
             made += heatmap_grid(grid(T, primary, key), ds, Ks, f"{title}\n{sub}", tdir, f"heatmap_{key}")
+            made += heatmap_panels([grid(T, nm, key) for nm in panel_names], panel_names, ds, Ks,
+                                   f"{title} — every predictor, true-score T={T}, "
+                                   f"anchors/mode: {n_pm} disk + {n_sh} shell",
+                                   tdir, f"heatmap_{key}_all")
         if cfg.anchors.roundtrip:
             made += heatmap_grid(grid(T, "roundtrip", None), ds, Ks, f"anchor round-trip accuracy (%), T={T}", tdir, "heatmap_roundtrip")
         if 2 in ds:

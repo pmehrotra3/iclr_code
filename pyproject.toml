@@ -14,7 +14,7 @@ dependencies = [
 
 [tool.setuptools]
 package-dir = {"" = "code"}
-packages = ["atlas", "atlas.stages", "atlas.conf", "ddim", "flow"]
+packages = ["common", "common.stages", "common.conf", "ddim", "flow"]
 
 [tool.setuptools.package-data]
-"atlas.conf" = ["*.yaml", "*/*.yaml"]
+"common.conf" = ["*.yaml", "*/*.yaml"]
