@@ -3,7 +3,7 @@
 defaults:
   - base
   - sweep: full
-  - classifier: mlp
+  - classifier: atlas
   - override hydra/job_logging: disabled
   - _self_
 
@@ -16,3 +16,7 @@ process: ddim
 ddim:
   beta_min: 0.1             # continuous VP schedule, abar_T ~ 4e-5 for any T
   beta_max: 20.0
+  true_solver: heun         # euler | heun -- integrator of the EXACT-score passes (analytic control and
+                            #   anchor backtrack). heun makes backtrack and forward exact inverses
+                            #   (roundtrip 1.0 vs 0.93 for euler at T = 200). The learned sampler
+                            #   always steps with plain DDIM.

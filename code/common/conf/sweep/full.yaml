@@ -1,8 +1,6 @@
 # @package sweep
-# the paper grid
+# the paper grid: every (d, K) cell, the exact-score backtrack at four T values
 d: [2, 4, 8, 16, 32]
 K: [2, 4, 8, 16]
-budgets: [200000, 1000000, 4000000]   # labeled-seed budgets for the classifiers
-T_train: 100                          # steps of the learned sampler
-T_true: 100                           # steps of the analytic-field sampler (evaluate / seedmap)
-T_atlas: ${range:50,1001,50}          # T values of the true-score backtrack (atlas stage)
+T_train: 150                          # steps of the learned sampler (the ground truth)
+T_atlas: [100, 200, 500, 1000]        # steps of the exact-score backtrack / analytic control

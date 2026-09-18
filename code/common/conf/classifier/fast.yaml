@@ -1,0 +1,24 @@
+# @package classifier
+# the four predictors that carry the story, for quick runs: knn, altered_knn, quadratic, polar8
+_shared: &defaults
+  hidden: 256
+  depth: 4
+  degree: 8
+  epochs: 30
+  batch: 2048
+  lr: 0.003
+  weight_decay: 0.0001
+  min_steps: 3000
+  ensemble: 3
+  k: 10
+  bandwidth: 1.0
+  temperature: 0.1
+  threshold: auto
+  confidence: entropy
+primary: polar8
+calibrate_prior: true_score
+models:
+  - {name: knn,         arch: knn, <<: *defaults}
+  - {name: altered_knn, arch: altered_knn, <<: *defaults}
+  - {name: quadratic,   arch: quadratic, lr: 0.03, <<: *defaults}
+  - {name: polar8,      arch: polar, degree: 8, <<: *defaults}

@@ -1,19 +1,19 @@
 # =====================================================================================
-#  Shared defaults for every process folder. A process config (ddim/conf/config.yaml,
-#  flow/conf/config.yaml) composes this file, picks a sweep and a classifier preset, and
-#  adds its own knobs. Override anything on the command line:
-#     python code/ddim/main.py sweep=quick classifier=ladder stages=[evaluate,visualize]
+#  Shared defaults for every process folder (ddim/conf/config.yaml, flow/conf/config.yaml
+#  compose this file, pick a sweep and a classifier preset, and add their own knobs).
+#  Override anything on the command line:
+#     python code/ddim/main.py sweep=d2 classifier=fast stages=[atlas,atlas_viz]
 # =====================================================================================
 
-process: ???                # set by the process folder (ddim | flow | ...)
+process: ???                # set by the process folder (ddim | flow)
 
-# stages to run, in order:
-#   train | evaluate | merge | seedmap | visualize      (seed classifier on learned-sampler labels)
-#   atlas | atlas_merge | atlas_viz                     (ring atlas: true-score backtrack -> predictor,
-#                                                        scored on the learned sampler, swept over T)
-stages: [train, evaluate, visualize]
+# The pipeline. train: the learned sampler per (d, K), cached in checkpoints/.
+#   atlas: plant labelled anchors in data space -> backtrack with the exact score -> fit every
+#   predictor on the labelled seed picture -> score against the learned sampler, swept over T
+#   and anchor budget. atlas_merge combines per-d shards (scripts/run.sh); atlas_viz draws.
+stages: [train, atlas, atlas_viz]
 
-run_tag: ${now:%Y-%m-%d}    # atlas results/figures go under output|visualization/<run_tag>/<process>/
+run_tag: ""                 # results + figures go under output/<run_tag>/<process>/ ("" = output/<process>/)
 
 device: auto                # auto | cpu | cuda
 seed: 0
@@ -22,61 +22,54 @@ seed: 0
 data:
   sigma: 0.1                # within-mode std
   radius: 2.0               # sphere radius the modes live on
-  m_mult: 1.0               # min-separation multiplier
+  m_mult: 1.0               # min-separation multiplier (centres >= 5 sigma apart for d > 2, 3 sigma at d = 2)
   mass_q: 0.99              # mode core mass fraction (defines R99)
 
-# ------------------------------------------------------------------ training the process
+# ------------------------------------------------------------------ the learned sampler (stage: train)
+# The score network is the ONLY trained object. Recipe: AdamW-free Adam, cosine lr decay, gradient
+# clipping and an EMA of the weights (Process.fit); retrain with step_growth x more steps until the
+# hallucination rate on probe seeds is <= (1 - mass_q) + hall_excess. Checkpoints store the recipe
+# and are retrained on demand when it changes.
 train:
   force_retrain: false
-  base_steps: 3000          # scaled by (1 + d/16)(1 + K/16)
+  base_steps: 30000         # scaled by (1 + d/16)(1 + K/16)
   lr: 0.001
   batch: 512
   probe_n: 10000
-  hall_target: 0.03         # retrain with more steps until the hallucination rate <= this
+  hall_target: 0.03         # absolute stop target, used only when hall_excess is null
+  hall_excess: 0.005        # stop when hallucination <= (1 - mass_q) + hall_excess
   step_growth: 1.7
-  max_attempts: 6
+  max_attempts: 4
   net: {h: 256, nb: 4, td: 128}   # ScoreNet backbone
+  ema: 0.999                # EMA decay of the weights that are sampled from (0 = off)
+  lr_final: 0.01            # cosine-decay the learning rate to lr * lr_final over the run (1 = constant)
+  grad_clip: 1.0            # clip the gradient norm (0 = off)
+  weight_decay: 0.0         # AdamW weight decay (0 = plain Adam)
 
-# ------------------------------------------------------------------ evaluation
+# ------------------------------------------------------------------ ground truth (atlas step 4)
 eval:
-  n_eval: 20000             # held-out seeds every predictor is scored on
-  labels: learned           # learned | true  -- whose fate is the ground truth?
-                            #   learned: the trained model's sampler (the default experiment)
-                            #   true   : the analytic-field sampler (control: how predictable is
-                            #            fate when the score is exact?)
-  analytic: true            # also score the analytic-field forward pass as a predictor
-  tag: ""                   # results file suffix -> output/<process>/results_<tag>.json
-  seed_offset: 1000         # training seeds are drawn from seed + seed_offset
+  n_eval: 200000            # fresh Gaussian seeds pushed through the learned sampler and labelled with L
+  seed_offset: 1000
 
-# ------------------------------------------------------------------ ring atlas (stage: atlas)
+# ------------------------------------------------------------------ anchors (atlas step 1)
 anchors:
-  budgets: [125, 250, 500, 1000]   # disk anchors per mode; EVERY budget is fitted and the best is
-                            #   reported per (d, K) cell, with the winning count shown in the figures
-  shell_frac: 0.5           # plus shell_frac * n_per_mode per mode in the shell R99..(1+shell_w) R99
-  shell_w: 1.0              #   (label = hallucination)
+  budgets: [20000, 50000, 100000]   # anchors per cell; every budget is fitted, the best is reported
+  unit: total               # total: budget = anchors per cell (mode balls + bands) | per_mode: per mode ball
+  shell_frac: 0.5           # band anchors per mode, as a fraction of the mode-ball anchors
+  shell_sigma: 2.0          # band width in units of sigma: R99 .. R99 + shell_sigma * sigma
   seed: 0
-  roundtrip: true           # also report how many anchors return to their label under true_forward
-  rings:                    # alternative anchor set used by classifiers with `anchors: rings` (altered_knn):
-    n_rings: 5              #   concentric spheres per mode, radii R99 * r_max * j / n_rings, label = mode,
-    r_max: 1.5              #   NO hallucination class; each anchor carries a confidence weight
-    weight: linear          #   linear: 1 - (1 - w_min) r / (r_max R99)  |  gaussian: exp(-r^2 / 2 sigma^2)
+  n_calibrate: 5000         # seeds labelled by the exact score at each T: calibrate altered_knn's
+                            #   threshold and the parametric models' hallucination prior
+  altered_knn:              # altered_knn's own anchor set: per mode, n_rings concentric spheres of radius
+    n_rings: 5              #   R99 * r_max * j / n_rings, every anchor labelled with its mode and weighted
+    r_max: 1.5              #   linear: 1 - (1 - w_min) r / (r_max R99) | gaussian: exp(-r^2 / 2 sigma^2)
+    weight: linear
     w_min: 0.2
-  n_calibrate: 5000         # seeds labeled by the true score to calibrate altered_knn's threshold=auto
 
-# ------------------------------------------------------------------ d=2 seed-space maps
-seedmap:
-  K: [4, 8, 16]             # which K to draw (d = 2 only)
-  n_grid: 700
-  extent: 3.5               # window [-extent, extent]^2
-  budget: 1000000           # labeled seeds used to fit each classifier panel
-  models: all               # all | list of classifier names to draw
-
-# ------------------------------------------------------------------ paths (repo-root relative)
 paths:
   root: ${oc.env:ATLAS_ROOT,${oc.env:PWD}}
   checkpoints: ${paths.root}/checkpoints
   output: ${paths.root}/output
-  viz: ${paths.root}/visualization
 
 hydra:
   run:

@@ -21,16 +21,10 @@ def seeds(N: int, d: int, seed: int, device: torch.device) -> torch.Tensor:
 # ------------------------------------------------------------------ paths
 # Every process writes under its own name so runs never collide:
 #   checkpoints/<process>/model_d{d}_K{K}_T{T}.pt     (train)
-#   output/<process>/results[<tag>].{json,csv}         (evaluate / merge)
-#   visualization/<process>/*.{pdf,png,tex}             (visualize / seedmap)
+#   output/[<run_tag>/]<process>/                      (atlas, atlas_viz)
 def process_dir(base: str, process: str) -> str:
     return os.path.join(base, process)
 
 
 def ckpt_path(ckpt_dir: str, process: str, d: int, K: int, T: int) -> str:
     return os.path.join(process_dir(ckpt_dir, process), f"model_d{d}_K{K}_T{T}.pt")
-
-
-def results_path(output_dir: str, process: str, tag: str = "", ext: str = "json") -> str:
-    tag = f"_{tag}" if tag else ""
-    return os.path.join(process_dir(output_dir, process), f"results{tag}.{ext}")

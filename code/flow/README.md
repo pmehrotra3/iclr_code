@@ -1,21 +1,17 @@
-# flow — Flow Matching with the Optimal-Transport conditional path
+# flow — OT flow matching, deterministic ODE sampler
 
-`process.py` implements the [`common.process.Process`](../common/process.py) contract following
-Lipman et al. (2022), Example II (`t = 0` noise, `t = 1` data):
+`process.py` implements the [`common.process.Process`](../common/process.py) contract:
 
-- **train_model** — conditional flow matching: `psi_t(x0) = (1 - (1 - sigma_min) t) x0 + t x1`,
-  target `x1 - (1 - sigma_min) x0` (`flow.sigma_min`).
-- **sample** — integrate the learned velocity on a uniform grid of `sweep.T_train` points with
-  `flow.solver` ∈ {euler, midpoint, rk4}.
-- **true_forward** — integrate the closed-form marginal OT velocity of the reference GMM
-  (responsibility-weighted conditional velocities) with the same solver.
+- **train_model** — conditional flow matching with the OT path (Lipman et al., Eq. 20-23,
+  `flow.sigma_min`), optimised by `Process.fit` (cosine lr, gradient clipping, EMA weights).
+- **sample** — integrate the learned velocity `t: 0 -> 1` with `flow.solver` (euler by default):
+  the learned sampler, the ground truth.
+- **true_forward / true_backward** — the closed-form marginal OT velocity of the reference GMM,
+  integrated with `flow.true_solver` (heun) so the two passes are exact inverses. Used for the
+  analytic control and the anchor backtrack.
 
 ```bash
-python code/flow/main.py                                  # full pipeline, defaults in conf/config.yaml
-python code/flow/main.py flow.solver=rk4 stages=[evaluate,visualize]
-python code/flow/main.py classifier=ladder sweep=ladder
-python code/flow/main.py eval.labels=true eval.tag=true   # exact-velocity control
+python code/flow/main.py                                  # train -> atlas -> atlas_viz, sweep=full
+python code/flow/main.py sweep=d2 classifier=fast
+python code/flow/main.py flow.sigma_min=0.001 run_tag=smin1e-3
 ```
-
-All shared knobs are documented in [`common/conf/base.yaml`](../common/conf/base.yaml) and the
-top-level README.

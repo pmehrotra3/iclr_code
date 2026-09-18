@@ -1,0 +1,6 @@
+# @package sweep
+# d = 2, every K: fast, and the only cells the seed picture can be drawn for
+d: [2]
+K: [2, 4, 8, 16]
+T_train: 150
+T_atlas: [100, 200, 500]

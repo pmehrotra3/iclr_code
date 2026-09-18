@@ -1,43 +1,35 @@
-"""common/fate.py — seed -> fate classifiers.
+"""common/fate.py — seed -> fate classifiers, fit on backtracked anchors.
 
-The fate of a seed under a deterministic sampler (DDIM, ODE flow) is a function of the
-seed, so it can be learned directly: label n seeds by running the sampler once, fit a
-classifier seed -> {hallucination, mode_0 .. mode_{K-1}}, predict unseen seeds.
-
-`arch` fixes the geometry of the decision boundaries in seed space (a capacity ladder):
+A seed is represented by phi(z) = (z / |z|, |z|) where the family needs it; the label set is
+{hallucination, mode_0 .. mode_{K-1}}. `arch` fixes the geometry of the decision boundaries:
 
   linear    : W x + b over K+1 classes             -> every boundary is a hyperplane
-  margin    : mode logits W x + b (K hyperplanes); hallucination logit
-              c - beta * (top1 - top2 mode logit)  -> "hallucinate iff within a margin of a
-              linear mode boundary"
-  radial    : linear over [x, |x|^2]               -> affine cones + a norm term
   quadratic : linear over [x, x_i x_j (i<=j)]      -> boundaries are quadrics
-  poly      : degree-p polynomial in x (Waring form: h = W x + b, readout linear in
-              [h, h^2, .., h^p]; spans all degree<=p polynomials for large `hidden`)
-  polar     : the same Waring polynomial in (u = x/|x|, r = |x|) with K mode logits, and
+  polar     : degree-p polynomial in (u = x/|x|, r = |x|) with K mode logits and a
               hallucination logit c + a*(r - sqrt d) - beta*(top1 - top2 mode logit):
               "modes = argmax of K degree-p polynomials on sphere x radius, hallucination =
               within a radius-dependent margin of a mode boundary"
   mlp       : depth-`depth` SiLU MLP of width `hidden` -> universal approximator (ceiling)
 
-Non-parametric (no training; the labeled seeds ARE the model):
-  knn       : vote of the `k` nearest labeled seeds (Euclidean, seed space)
+Non-parametric (no training; the anchors ARE the model):
+  knn       : vote of the `k` nearest anchors (Euclidean, seed space)
   kernel    : Gaussian-kernel vote, h = `bandwidth` x median nearest-neighbour distance
-              among the labeled seeds (Nadaraya-Watson; the classic atlas vote)
-  altered_knn : weighted kNN over MODE-labeled anchors only (concentric rings with radius-
-              decaying weights, see gmm.ring_anchors_weighted); a seed whose neighbour vote is
-              low-confidence (normalised entropy) is declared a hallucination. See AlteredKNN.
+              among the anchors (Nadaraya-Watson)
+  altered_knn : weighted kNN over MODE-labeled anchors only (concentric spheres with radius-
+              decaying weights, gmm.altered_knn_anchors); a seed whose neighbour vote is
+              low-confidence (normalised entropy) is declared a hallucination. It tests whether
+              hallucination regions are identifiable as "nowhere in particular" without any
+              explicit hallucination anchors. See AlteredKNN.
 
-Only `mlp` is universal; everything else is a fixed-capacity family whose boundaries can
-be described in closed form (or, for knn / kernel, are the Voronoi / kernel cells of the
-labeled seeds).
+Every parametric model is also reported prior-calibrated (hall_bias_for_rate): the hallucination
+cut is shifted so the model calls the same fraction of seeds hallucinations as the exact score.
 """
 from __future__ import annotations
 import math
 import torch
 import torch.nn as nn
 
-PARAMETRIC = ("linear", "margin", "radial", "quadratic", "poly", "polar", "mlp")
+PARAMETRIC = ("linear", "quadratic", "polar", "mlp")
 NONPARAMETRIC = ("knn", "kernel", "altered_knn")
 ARCHS = PARAMETRIC + NONPARAMETRIC
 
@@ -175,18 +167,9 @@ class FateNet(nn.Module):
         h = hidden
         if arch == "linear":
             self.net = nn.Linear(d, K + 1)
-        elif arch == "margin":
-            self.net = nn.Linear(d, K)
-            self.c = nn.Parameter(torch.zeros(()))
-            self.log_beta = nn.Parameter(torch.zeros(()))
-        elif arch == "radial":
-            self.net = nn.Linear(d + 1, K + 1)
         elif arch == "quadratic":
             self.register_buffer("iu", torch.triu_indices(d, d))
             self.net = nn.Linear(d + self.iu.shape[1], K + 1)
-        elif arch == "poly":
-            self.proj = nn.Linear(d, h)
-            self.net = nn.Linear(h * degree, K + 1)
         elif arch == "polar":
             self.proj = nn.Linear(d + 1, h)
             self.net = nn.Linear(h * degree, K)
@@ -210,16 +193,9 @@ class FateNet(nn.Module):
 
     def forward(self, x):
         a = self.arch
-        if a == "margin":
-            return self._with_margin(self.net(x))
-        if a == "radial":
-            return self.net(torch.cat([x, (x * x).sum(1, keepdim=True)], 1))
         if a == "quadratic":
             q = x[:, self.iu[0]] * x[:, self.iu[1]]
             return self.net(torch.cat([x, q], 1))
-        if a == "poly":
-            z = self.proj(x) / math.sqrt(self.d)
-            return self.net(self._powers(z))
         if a == "polar":
             mu = math.sqrt(self.d)
             r = x.norm(dim=1, keepdim=True)
@@ -229,7 +205,7 @@ class FateNet(nn.Module):
         return self.net(x)
 
     def describe(self) -> dict:
-        """Readable summary of the fitted hallucination rule (margin / polar only)."""
+        """Readable summary of the fitted hallucination rule (polar only)."""
         out = {"arch": self.arch, "n_params": sum(p.numel() for p in self.parameters())}
         if hasattr(self, "log_beta"):
             out["beta"] = float(self.log_beta.exp())
@@ -246,8 +222,8 @@ def train_fate_classifier(X, y, K, arch="mlp", hidden=512, depth=4, degree=3, ep
     """Fit one classifier on seeds X (n,d) with fate labels y in {-1, 0..K-1}.
 
     Parametric archs run `epochs` passes of mini-batches of size `batch`, but at least
-    `min_steps` gradient steps, so small training sets (a few thousand ring anchors) converge.
-    Non-parametric archs (knn, kernel) just store the labeled seeds.
+    `min_steps` gradient steps, so small anchor sets converge. Non-parametric archs (knn,
+    kernel) just store the anchors.
     """
     if arch == "altered_knn":
         return AlteredKNN(K, k, temperature, threshold, confidence).to(device).fit(X, y, w)   # calibrate() if threshold=auto
@@ -289,14 +265,42 @@ def train_ensemble(X, y, K, spec: dict, device=None, w=None):
 
 
 @torch.no_grad()
-def predict_fate(nets, X, chunk=100000):
-    """Ensemble prediction (summed log-prob) -> labels in {-1, 0..K-1}."""
-    out = []
+def _hall_margin(nets, X, chunk=100000):
+    """Per seed: summed log-prob of hallucination minus that of the best mode, and the best mode."""
+    ms, ks = [], []
     for s in range(0, X.shape[0], chunk):
-        xs = X[s:s + chunk]
-        lp = sum(torch.log_softmax(net(xs), 1) for net in nets)
-        out.append(lp.argmax(1) - 1)
-    return torch.cat(out)
+        lp = sum(torch.log_softmax(net(X[s:s + chunk]), 1) for net in nets)
+        best, k = lp[:, 1:].max(1)
+        ms.append(lp[:, 0] - best); ks.append(k)
+    return torch.cat(ms), torch.cat(ks)
+
+
+@torch.no_grad()
+def predict_fate(nets, X, chunk=100000, hall_bias=0.0):
+    """Ensemble prediction (summed log-prob) -> labels in {-1, 0..K-1}.
+
+    hall_bias is added to the hallucination log-prob before the argmax (see hall_bias_for_rate).
+    """
+    m, k = _hall_margin(nets, X, chunk)
+    return torch.where(m + hall_bias > 0, torch.full_like(k, -1), k)
+
+
+@torch.no_grad()
+def hall_bias_for_rate(nets, X, rate, chunk=100000):
+    """Hallucination log-prob offset that makes the ensemble call exactly `rate` of X hallucinations.
+
+    The anchors are ~1/3 hallucination while the sampler hallucinates on a few percent of seeds,
+    so an uncorrected classifier over-calls the class. Shifting the hallucination logit is a
+    prior correction: the boundaries keep their shape, only the red/mode cut moves.
+    """
+    m, _ = _hall_margin(nets, X, chunk)
+    n_hall = int(round(rate * m.shape[0]))
+    if n_hall <= 0:
+        return float(-(m.max().item()) - 1e-6)
+    if n_hall >= m.shape[0]:
+        return float(-(m.min().item()) + 1e-6)
+    top = torch.topk(m, n_hall + 1).values          # the n_hall largest margins become hallucinations
+    return float(-0.5 * (top[-1] + top[-2]).item())
 
 
 METRICS = ("full_acc", "mode_acc", "mode_f1", "hall_prec", "hall_rec", "hall_f1", "balanced")

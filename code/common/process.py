@@ -63,6 +63,36 @@ class Process(ABC):
         n = getattr(getattr(self.cfg, "train", None), "net", None)
         return dict(n) if n is not None else {}
 
+    def fit(self, model, loss_fn, n_steps, lr, batch):
+        """Shared optimisation loop for train_model: Adam(W) with cosine decay of the learning rate
+        to lr * train.lr_final, gradient clipping at train.grad_clip, and an exponential moving
+        average of the weights (train.ema) that replaces the raw weights at the end -- the
+        standard recipe for a low-error score network. loss_fn(batch) -> scalar loss.
+        """
+        import copy
+        tr = getattr(self.cfg, "train", None)
+        get = lambda k, dflt: float(tr.get(k, dflt)) if tr is not None else dflt
+        ema_decay, lr_final, clip, wd = get("ema", 0.0), get("lr_final", 1.0), get("grad_clip", 0.0), get("weight_decay", 0.0)
+        opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd) if wd > 0 else torch.optim.Adam(model.parameters(), lr=lr)
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, n_steps, eta_min=lr * lr_final) if lr_final < 1 else None
+        ema = copy.deepcopy(model) if ema_decay > 0 else None
+        for step in range(n_steps):
+            loss = loss_fn(batch)
+            opt.zero_grad(); loss.backward()
+            if clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+            opt.step()
+            if sched is not None:
+                sched.step()
+            if ema is not None:
+                decay = min(ema_decay, (1 + step) / (10 + step))      # warm-up: early weights are noise
+                with torch.no_grad():
+                    for pe, pm in zip(ema.parameters(), model.parameters()):
+                        pe.mul_(decay).add_(pm, alpha=1 - decay)
+        if ema is not None:
+            model.load_state_dict(ema.state_dict())
+        return model
+
     @abstractmethod
     def build_model(self, d): ...
 

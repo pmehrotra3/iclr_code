@@ -1,8 +1,9 @@
 """common/gmm.py — the Gaussian-mixture reference distribution.
 
-K isotropic modes (std sigma) on a sphere of radius R in R^d. A data-space point is
-"in mode k" if it lies within R99 of mu_k (the radius holding fraction q of a mode's mass)
-and is a *hallucination* (label -1) if it is within R99 of no mode.
+K isotropic modes (std sigma) on a sphere of radius R in R^d. The labelling rule L: a
+data-space point is "in mode k" if mu_k is the nearest centre and lies within R99 (the radius
+holding fraction q of a mode's mass), and is a *hallucination* (label -1) if it is within R99
+of no mode. The same rule colours the ground truth and the planted anchors.
 """
 from __future__ import annotations
 import numpy as np
@@ -29,6 +30,15 @@ def sample_modes(K: int, d: int, R: float, sigma: float, m_mult: float = 1.0,
         if all(np.dot(v - m, v - m) > min_sep2 for m in modes):
             modes.append(v)
         tries += 1
+    if len(modes) < K and d == 2:
+        # d=2 packs K modes onto a circle, where rejection sampling stalls well before the
+        # geometric limit (K=32 needs 9.6 of the 12.57 circumference). Equal spacing is the
+        # only arrangement up to rotation, so place them deterministically instead.
+        ang = 2 * np.pi * (np.arange(K) + rng.rand()) / K
+        M = np.stack([R * np.cos(ang), R * np.sin(ang)], 1).astype(np.float32)
+        if np.min(np.sum((M[:, None] - M[None]) ** 2, -1) + np.eye(K) * 1e9) <= min_sep2:
+            raise RuntimeError(f"d=2, K={K}: even spacing still violates the {mult}-sigma separation")
+        return torch.tensor(M, device=device), float(mult)
     if len(modes) < K:
         raise RuntimeError(f"could only place {len(modes)}/{K} modes for d={d}, K={K}")
     M = np.asarray(modes, dtype=np.float32)
@@ -55,36 +65,45 @@ def label_fate(Xf: torch.Tensor, means_t: torch.Tensor, R99: float, chunk: int =
 
 
 @torch.no_grad()
-def ring_anchors(means_t, R99, n_per_mode, shell_w=1.0, shell_frac=0.5, seed=0, device=None):
-    """Data-space anchor points for the ring atlas.
+def ball_anchors(means_t, R99, n_per_mode, shell_frac=0.5, shell_sigma=2.0, sigma=None,
+                 seed=0, device=None):
+    """Step 1 of the atlas: labelled anchors planted in DATA space, no model involved.
 
-    Per mode: n_per_mode points uniform in the R99 ball (label k) and shell_frac * n_per_mode
-    points uniform in radius over the shell R99 .. (1 + shell_w) R99 (label -1, hallucination).
-    Backtracked to seed space they become labeled training points for a seed -> fate predictor.
+    Around every mode centre: n_per_mode points uniform in the R99 ball, plus shell_frac *
+    n_per_mode points uniform in radius over the band R99 .. R99 + shell_sigma * sigma just
+    outside it -- the planted hypothesis that hallucinations live in a thin band around each
+    mode. Every anchor is then coloured with the SAME rule L as the ground truth (label_fate:
+    nearest mode if within R99 of it, else -1). Colouring by the planting mode instead breaks
+    whenever two balls overlap (mode centres closer than 2 R99, the rule at d = 2): a point in
+    mode k's ball can be nearer to mode j, and a point in k's band can lie inside j's ball.
+    Returns P (n, d) data-space positions and y (n,) labels.
     """
     K, d = means_t.shape
     g = torch.Generator(device=device).manual_seed(seed)
     n_shell = max(1, int(round(shell_frac * n_per_mode)))
-    P, y = [], []
+    width = shell_sigma * sigma
+    P = []
     for k in range(K):
         u = torch.rand(n_per_mode, generator=g, device=device) ** (1.0 / d)
         dirs = torch.randn(n_per_mode, d, generator=g, device=device)
         dirs /= dirs.norm(dim=1, keepdim=True)
-        P.append(means_t[k] + (R99 * u)[:, None] * dirs); y += [k] * n_per_mode
-        r = R99 * (1 + shell_w * torch.rand(n_shell, generator=g, device=device))
+        P.append(means_t[k] + (R99 * u)[:, None] * dirs)
+        r = R99 + width * torch.rand(n_shell, generator=g, device=device)
         dirs = torch.randn(n_shell, d, generator=g, device=device)
         dirs /= dirs.norm(dim=1, keepdim=True)
-        P.append(means_t[k] + r[:, None] * dirs); y += [-1] * n_shell
-    return torch.cat(P, 0), torch.tensor(y, device=device)
+        P.append(means_t[k] + r[:, None] * dirs)
+    P = torch.cat(P, 0)
+    return P, label_fate(P, means_t, R99)
 
 
 @torch.no_grad()
-def ring_anchors_weighted(means_t, R99, n_per_mode, n_rings=5, r_max=1.5, weight="linear",
-                          w_min=0.2, sigma=None, seed=0, device=None):
-    """Concentric-sphere anchors with confidence weights (for altered_knn). No hallucination class.
+def altered_knn_anchors(means_t, R99, n_per_mode, n_rings=5, r_max=1.5, weight="linear",
+                        w_min=0.2, sigma=None, seed=0, device=None):
+    """Mode-labelled anchors with confidence weights for altered_knn (no hallucination class).
 
-    Per mode: n_rings spheres of radius r_j = R99 * r_max * j / n_rings (j = 1..n_rings), with
-    n_per_mode / n_rings points uniform on each; label = mode. Weight decays with the radius:
+    Per mode: n_rings concentric spheres of radius r_j = R99 * r_max * j / n_rings (j = 1..n_rings),
+    n_per_mode / n_rings points uniform on each, every point labelled with its own mode. The
+    weight decays with the radius:
       linear   : w = 1 - (1 - w_min) * r / (r_max R99)
       gaussian : w = exp(-r^2 / (2 sigma^2))  (the mode's own density ratio; needs sigma)
     Returns P (n, d), y (n,), w (n,).
@@ -98,7 +117,8 @@ def ring_anchors_weighted(means_t, R99, n_per_mode, n_rings=5, r_max=1.5, weight
             r = R99 * r_max * j / n_rings
             dirs = torch.randn(per_ring, d, generator=g, device=device)
             dirs /= dirs.norm(dim=1, keepdim=True)
-            P.append(means_t[k] + r * dirs); y += [k] * per_ring
+            P.append(means_t[k] + r * dirs)
+            y += [k] * per_ring
             if weight == "gaussian":
                 wj = float(np.exp(-r ** 2 / (2 * sigma ** 2)))
             else:

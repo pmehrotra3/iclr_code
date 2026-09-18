@@ -1,0 +1,35 @@
+{
+  "32_2": {
+    "d": 32,
+    "K": 2,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/ddim/model_d32_K2_T150.pt",
+    "status": "cached"
+  },
+  "32_4": {
+    "d": 32,
+    "K": 4,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/ddim/model_d32_K4_T150.pt",
+    "status": "cached"
+  },
+  "32_8": {
+    "d": 32,
+    "K": 8,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/ddim/model_d32_K8_T150.pt",
+    "status": "cached"
+  },
+  "32_16": {
+    "d": 32,
+    "K": 16,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/ddim/model_d32_K16_T150.pt",
+    "status": "cached"
+  },
+  "32_32": {
+    "d": 32,
+    "K": 32,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/ddim/model_d32_K32_T150.pt",
+    "status": "trained",
+    "hall_rate": 0.031599998474121094,
+    "steps": 651712,
+    "secs": 2084.5
+  }
+}

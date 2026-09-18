@@ -26,8 +26,40 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from common.stages.visualize import _save, SERIES, MARKERS, INK, INK2, BLUES
+from matplotlib.colors import LinearSegmentedColormap
+
 from common.stages.atlas import run_dir, model_at, model_names
+
+# ------------------------------------------------------------------ paper style
+SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#7a5cc7", "#52514e",
+          "#0d366b", "#9c4a1a", "#0f6b4b"]
+MARKERS = ["o", "s", "^", "D", "v", "P", "X", "<", ">", "*"]
+BLUES = LinearSegmentedColormap.from_list(
+    "paper_blues",
+    ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7",
+     "#3987e5", "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281", "#0d366b"])
+INK, INK2, GRID = "#0b0b0b", "#52514e", "#d9d8d3"
+
+plt.rcParams.update({
+    "font.family": "serif", "mathtext.fontset": "stix", "font.size": 8,
+    "axes.labelsize": 8, "axes.titlesize": 8, "legend.fontsize": 7,
+    "xtick.labelsize": 7, "ytick.labelsize": 7,
+    "axes.edgecolor": INK2, "axes.labelcolor": INK, "xtick.color": INK2, "ytick.color": INK2,
+    "axes.spines.top": False, "axes.spines.right": False,
+    "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.5,
+    "lines.linewidth": 1.4, "lines.markersize": 4.5, "legend.frameon": False,
+    "pdf.fonttype": 42, "ps.fonttype": 42, "savefig.dpi": 300,
+})
+
+
+def _save(fig, viz_dir, stem):
+    paths = []
+    for ext in ("pdf", "png"):
+        p = os.path.join(viz_dir, f"{stem}.{ext}")
+        fig.savefig(p, bbox_inches="tight", pad_inches=0.02)
+        paths.append(p)
+    plt.close(fig)
+    return paths
 
 METRICS = [("full_acc", "overall accuracy"), ("mode_f1", "mode-basin $F_1$"),
            ("hall_f1", "hallucination $F_1$")]

@@ -1,30 +1,35 @@
 # @package classifier
-# predictors fit on ring-atlas anchors (a few thousand points). Non-parametric (knn, kernel),
-# linear, quadratic, polynomial in (direction, radius) of rising degree, and the MLP ceiling.
-# min_steps keeps small anchor sets converging. Heatmaps show `primary`; every model is in results.
+# The predictor family fitted on the backtracked anchors (step 3). Non-parametric votes (knn,
+# kernel), altered_knn (mode-only anchors, low-confidence vote = hallucination; reported
+# separately), then closed-form boundary families of rising capacity -- linear, quadratic,
+# polynomial in (direction, radius) of degree 2 / 3 / 8 -- and the MLP ceiling. Every parametric
+# model is also reported prior-calibrated as <name>_cal. Heatmaps show `primary`; every model is
+# in the results.
 _shared: &defaults     # merged into every model entry below
   hidden: 256
   depth: 4
   degree: 8
   epochs: 30
-  batch: 512
+  batch: 2048
   lr: 0.003
   weight_decay: 0.0001
-  min_steps: 3000
+  min_steps: 3000           # at least this many gradient steps, so small anchor sets converge
   ensemble: 3
   k: 10                     # knn neighbours
   bandwidth: 1.0            # kernel: h = bandwidth x median nearest-anchor distance
   temperature: 0.1          # altered_knn: p = softmax(weighted vote / temperature); <= 0 -> use the vote directly
-  threshold: auto           # altered_knn: number in [0,1], or auto = maximise halluc. F1 on true-score-labeled seeds
+  threshold: auto           # altered_knn: number in [0,1], or auto = maximise halluc. F1 on exact-score-labelled seeds
   confidence: entropy       # altered_knn: entropy (1 - H(p)/log K) | max (max_k p_k)
 primary: polar8
+calibrate_prior: true_score   # <name>_cal rows: hallucination cut shifted to the exact score's hallucination
+                              #   rate at that T (or a fixed rate if a number); null disables
 models:
   - {name: knn,         arch: knn, <<: *defaults}
-  - {name: altered_knn, arch: altered_knn, anchors: rings, <<: *defaults}
-  - {name: kernel,    arch: kernel, <<: *defaults}
-  - {name: linear,    arch: linear, lr: 0.03, <<: *defaults}
-  - {name: quadratic, arch: quadratic, lr: 0.03, <<: *defaults}
-  - {name: polar2,    arch: polar, degree: 2, <<: *defaults}
-  - {name: polar3,    arch: polar, degree: 3, <<: *defaults}
-  - {name: polar8,    arch: polar, degree: 8, <<: *defaults}
-  - {name: mlp,       arch: mlp, hidden: 512, <<: *defaults}
+  - {name: kernel,      arch: kernel, <<: *defaults}
+  - {name: altered_knn, arch: altered_knn, <<: *defaults}
+  - {name: linear,      arch: linear, lr: 0.03, <<: *defaults}
+  - {name: quadratic,   arch: quadratic, lr: 0.03, <<: *defaults}
+  - {name: polar2,      arch: polar, degree: 2, <<: *defaults}
+  - {name: polar3,      arch: polar, degree: 3, <<: *defaults}
+  - {name: polar8,      arch: polar, degree: 8, <<: *defaults}
+  - {name: mlp,         arch: mlp, hidden: 512, <<: *defaults}
