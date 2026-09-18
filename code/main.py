@@ -12,7 +12,7 @@ Run only some stages:
     python code/main.py stages=[visualize]          # just re-plot from output/results.json
 
 Other handy overrides:
-    python code/main.py device=cpu train.force_retrain=true sweep.T_true=200
+    python code/main.py device=cpu train.force_retrain=true process.T_true=200
 """
 from __future__ import annotations
 import os

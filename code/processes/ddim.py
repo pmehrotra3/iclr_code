@@ -19,7 +19,10 @@ class DDIMProcess(Process):
 
     def __init__(self, means_t, variance, T, device, cfg=None):
         super().__init__(means_t, variance, T, device, cfg)
-        self.abar = core.make_schedule(T, device=device)
+        proc = getattr(cfg, "process", None) if cfg is not None else None
+        beta_min = float(getattr(proc, "beta_min", 1e-4)) if proc is not None else 1e-4
+        beta_max = float(getattr(proc, "beta_max", 0.02)) if proc is not None else 0.02
+        self.abar = core.make_schedule(T, beta_min, beta_max, device=device)
 
     def build_model(self, d):
         return core.ScoreNet(d).to(self.device)
@@ -49,4 +52,11 @@ class DDIMProcess(Process):
         # reuse the shared true-score backtrack (data -> noise)
         return core.backtrack_true(
             Pd, self.means_t, self.abar, self.T, self.variance, chunk=chunk
+        )
+
+    @torch.no_grad()
+    def true_field_forward(self, X0, chunk=50000):
+        # exact-score DDIM forward (noise -> data), inverse of true_field_backtrack
+        return core.forward_true(
+            X0, self.means_t, self.abar, self.T, self.variance, chunk=chunk
         )

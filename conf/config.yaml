@@ -1,67 +1,49 @@
-# =====================================================================================
-#  Hydra config for the diffusion-atlas pipeline.
-#  Override anything on the command line, e.g.:
-#     python code/main.py sweep.d=[2,8,32] sweep.K=[8] sweep.anchors=[5000,50000]
-#     python code/main.py stages=[evaluate,visualize] device=cpu
-#     python code/main.py sweep.T_true=200 eval.h_frac=0.2
-# =====================================================================================
+defaults:
+  - process: ddim
+  - sweep: default
+  - classifier: default
+  - _self_
 
-# which stages to run, in order
 stages: [train, evaluate, visualize]
-
-# which generative process this run uses. Runs are fully separate: pick ONE per run and
-# its checkpoints / results / figures live under data|output|visualization/<sampler>/.
-#   sampler=ddim  -> VP diffusion, deterministic DDIM
-#   sampler=flow  -> Flow Matching, Optimal-Transport path (Lipman et al. 2022)
-sampler: ddim       # ddim | flow
-
-device: auto        # auto | cpu | cuda
+device: auto
 seed: 0
+run_id: ${now:%Y-%m-%d_%H-%M-%S}   # one output dir per invocation; every stage in this run shares it
 
-# flow-matching (OT path) options; ignored when sampler=ddim
-flow:
-  sigma_min: 0.0001   # sigma_min in Eq. 20-23
-  solver: euler       # euler | midpoint | rk4
-
-# ------------------------------------------------------------------ the sweep
-sweep:
-  d: [2, 4, 8, 16, 32]      # ambient dimensions
-  K: [2, 4, 8, 16]          # number of modes
-  anchors: [2000, 10000, 50000]   # n_disk values swept by the atlas
-  T_train: 100              # steps for the learned sampler
-  T_true: 100               # steps for the true-score backtrack
-
-# ------------------------------------------------------------------ data / GMM
 data:
-  sigma: 0.1                # within-mode std
-  radius: 2.0               # sphere radius the modes live on
-  m_mult: 1.0               # min-separation multiplier
-  mass_q: 0.99              # core mass fraction (defines R99)
+  sigma: 0.1
+  radius: 2.0
+  m_mult: 1.5
+  mass_q: 0.99
 
-# ------------------------------------------------------------------ training
 train:
   force_retrain: false
   base_steps: 3000
   lr: 0.001
   batch: 512
   probe_n: 10000
-  hall_target: 0.03         # retrain (grow steps) until learned hall-rate <= this
+  hall_target: 0.03
   step_growth: 1.7
   max_attempts: 6
 
-# ------------------------------------------------------------------ evaluation
 eval:
   n_eval: 20000
-  delta: 0.10               # responsibility tolerance for the analytic predictor
-  shell_w: 1.0              # hallucination shell width (in units of R99)
-  h_frac: 0.3               # Gaussian-vote bandwidth as a fraction of R99
 
-# ------------------------------------------------------------------ paths (relative to repo root)
+# anchors planted in data space, then backtracked to seed space with the exact field
+anchors:
+  seed: 0
+  shell_frac: 0.5          # hallucination-band anchors per mode, as a fraction of the ball anchors
+  shell_sigma: 2.0         # band width in sigma: R99 .. R99 + shell_sigma * sigma
+  n_calibrate: 5000        # seeds labelled by the exact score to calibrate altered_knn's cut
+  altered_knn:             # altered_knn's own mode-only anchor set
+    n_rings: 5             # concentric spheres per mode, radius R99 * r_max * j / n_rings
+    r_max: 1.5
+    weight: linear         # linear | gaussian
+    w_min: 0.2
+
 paths:
   root: ${oc.env:ATLAS_ROOT,${oc.env:PWD}}
   data: ${paths.root}/data
   output: ${paths.root}/output
-  viz: ${paths.root}/visualization
 
 hydra:
   run:

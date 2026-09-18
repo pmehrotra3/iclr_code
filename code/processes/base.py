@@ -57,3 +57,19 @@ class Process(ABC):
     def true_field_backtrack(self, Pd, chunk=50000):
         """Carry data-space points Pd back to seed space via the analytic field."""
         ...
+
+    @torch.no_grad()
+    @abstractmethod
+    def true_field_forward(self, X0, chunk=50000):
+        """Carry seeds X0 forward to data space via the analytic field (the inverse of
+        true_field_backtrack). No learned model involved."""
+        ...
+
+    # ---- fate labels ----
+    @torch.no_grad()
+    def label(self, model, X0, R99, chunk=50000):
+        """Fate labels of seeds X0: under the LEARNED model, or the exact analytic field when
+        model is None (the exact-score reference used to calibrate predictors)."""
+        import core
+        Xf = self.true_field_forward(X0, chunk) if model is None else self.sample(model, X0, chunk)
+        return core.label_fate(Xf, self.means_t, R99)

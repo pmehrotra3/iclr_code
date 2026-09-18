@@ -2,11 +2,15 @@
 core.py — shared building blocks for the diffusion-atlas experiments.
 
 Everything that more than one stage needs lives here: the score network, the VP
-schedule, GMM mode sampling, the learned + true-score samplers, the true-score
-atlas builder, the all-anchor Gaussian vote, and the analytic-responsibility
-predictor. The stage files (train / evaluate / visualize) import from here so the
-numerics are defined exactly once.
+schedule, GMM mode sampling, the learned + exact-score samplers, the exact-field
+backtrack / forward, and the labelled data-space anchors. The stage files
+(train / evaluate / visualize) import from here so the numerics are defined once.
 """
+
+
+# --------------------------------------------------------------------------------------
+# Importing necessary modules
+# --------------------------------------------------------------------------------------
 from __future__ import annotations
 import math
 import numpy as np
@@ -17,55 +21,78 @@ from scipy.stats import chi2
 
 # --------------------------------------------------------------------------------------
 # device
+# Defaults to "auto": picks the GPU if one is visible, else CPU.
+# "cpu" and "cuda" are explicit overrides; "cuda" errors here if CUDA is missing.
 # --------------------------------------------------------------------------------------
+
 def get_device(pref: str = "auto") -> torch.device:
     if pref == "cpu":
         return torch.device("cpu")
     if pref == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("device: cuda requested but CUDA is not available")
         return torch.device("cuda")
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # --------------------------------------------------------------------------------------
-# VP schedule
+# noising schedule
+# Linear betas over T steps. Returns abar[i] = prod(1 - beta), the signal left at step i:
+# x_t = sqrt(abar)*x0 + sqrt(1-abar)*noise.
+# Defaults assume T=1000, beta_min = 0.001, beta_max =  0.02
 # --------------------------------------------------------------------------------------
-def make_schedule(T: int, beta_min: float = 1e-4, beta_max: float = 0.02,
+
+def make_schedule(T: int = 1000, beta_min: float = 0.001, beta_max: float = 0.02,
                   device: torch.device | None = None) -> torch.Tensor:
     betas = np.linspace(beta_min, beta_max, T)
     abar = np.cumprod(1.0 - betas)
     return torch.tensor(abar, dtype=torch.float32, device=device)
 
 
+# --------------------------------------------------------------------------------------
+# Radius of the ball holding fraction q of an isotropic Gaussian mode.
+# Chi-squared with d dof, so it grows like sqrt(d)*sigma. This is the
+# mode/hallucination boundary used downstream.
+# --------------------------------------------------------------------------------------
 def r99(d: int, sigma: float, q: float = 0.99) -> float:
-    """Radius of the ball that holds fraction q of an isotropic Gaussian mode."""
     return float(np.sqrt(chi2.ppf(q, d)) * sigma)
+
 
 
 # --------------------------------------------------------------------------------------
 # GMM modes
+# Rejection-sample K centers on the sphere of radius R, keeping every pair at least
+# m_mult * 2*R99 apart so the 99% balls don't overlap (adaptive in d via R99).
+# Returns the centers and the separation actually enforced.
 # --------------------------------------------------------------------------------------
-def sample_modes(K: int, d: int, R: float, sigma: float, m_mult: float = 1.0,
+def sample_modes(K: int, d: int, R: float, sigma: float, m_mult: float = 1.5,
                  seed: int = 0, device: torch.device | None = None):
-    """Place K mode centers on a sphere of radius R with a minimum separation."""
-    mult = 5.0 if d > 2 else 3.0
-    min_sep2 = (mult * m_mult * sigma) ** 2
+    min_sep = m_mult * 2 * r99(d, sigma)
     rng = np.random.RandomState(seed)
-    modes: list[np.ndarray] = []
-    tries, max_tries = 0, 500 * K + 2_000_000
-    while len(modes) < K and tries < max_tries:
-        v = rng.randn(d)
-        v = R * v / np.linalg.norm(v)
-        if all(np.dot(v - m, v - m) > min_sep2 for m in modes):
-            modes.append(v)
+
+    modes = np.empty((K, d), dtype=np.float64)
+    n, tries, max_tries = 0, 0, 10_000 * K
+    while n < K and tries < max_tries:
         tries += 1
-    if len(modes) < K:
-        raise RuntimeError(f"could only place {len(modes)}/{K} modes for d={d}, K={K}")
-    M = np.asarray(modes, dtype=np.float32)
-    return torch.tensor(M, device=device), float(mult)
+        v = rng.randn(d)
+        v *= R / np.linalg.norm(v)
+        if n and np.linalg.norm(modes[:n] - v, axis=1).min() < min_sep:
+            continue
+        modes[n] = v
+        n += 1
+
+    if n < K:
+        raise RuntimeError(
+            f"placed only {n}/{K} modes for d={d}, K={K} "
+            f"(R={R}, sigma={sigma}, min_sep={min_sep:.3f}); increase R or lower sigma/K"
+        )
+    return torch.tensor(modes.astype(np.float32), device=device), float(min_sep)
 
 
 # --------------------------------------------------------------------------------------
 # score network
+# Residual MLP conditioned on t via a sinusoidal embedding.
+# Predicts the noise eps added at step t (not the score itself).
 # --------------------------------------------------------------------------------------
 class SinusoidalPosEmb(nn.Module):
     def __init__(self, dim: int):
@@ -94,7 +121,9 @@ class MLPBlock(nn.Module):
 
 
 class ScoreNet(nn.Module):
-    def __init__(self, d, h=256, nb=4, td=128):
+    H, NB, TD = 256, 4, 128
+
+    def __init__(self, d, h=H, nb=NB, td=TD):
         super().__init__()
         act = nn.LeakyReLU(0.2)
         self.inp = nn.Linear(d, h)
@@ -162,6 +191,17 @@ def label_fate(Xf, means_t, R99, chunk=50000, device=None):
 
 # --------------------------------------------------------------------------------------
 # true-score sampler + backtrack (the analytic reference process)
+#
+# The exact score of the GMM, in closed form: no network, no training. Used to build the
+# atlas, so its anchors are grounded in the true geometry rather than in whatever the
+# learned model happened to fit.
+#
+# true_score      : s(x) = sum_k w_k (mu_k - x)/v, with w = softmax(-||x-mu_k||^2 / 2v).
+#                   Callers pass the noised mixture at level t: means sqrt(ab)*mu,
+#                   variance v = ab*variance + (1-ab).
+# backtrack_true  : runs the DDIM update forwards in t (noise increasing), driving it with
+#                   the true score instead of a network, so data-space points are carried
+#                   back to the seeds that would have produced them.
 # --------------------------------------------------------------------------------------
 @torch.no_grad()
 def true_score(X, Mt, v):
@@ -172,7 +212,6 @@ def true_score(X, Mt, v):
 
 @torch.no_grad()
 def backtrack_true(Xd, means_t, abar_t, T, variance, chunk=50000):
-    """Carry data-space points back to the initial noise via the TRUE-score reverse ODE."""
     X = Xd.clone()
     for i in range(1, T):
         ab, abp = abar_t[i - 1], abar_t[i]
@@ -186,81 +225,79 @@ def backtrack_true(Xd, means_t, abar_t, T, variance, chunk=50000):
     return X
 
 
+@torch.no_grad()
+def forward_true(X0, means_t, abar_t, T, variance, chunk=50000):
+    """Exact-score DDIM FORWARD: seeds (noise) -> data. The inverse of backtrack_true,
+    driven by the closed-form GMM score instead of a network. Used to label seeds by the
+    exact score (the analytic reference), e.g. altered_knn's calibration set."""
+    X = X0.clone()
+    for i in reversed(range(1, T)):
+        ab, abp = abar_t[i], abar_t[i - 1]
+        v = ab * variance + (1 - ab)
+        for s in range(0, X.shape[0], chunk):
+            xs = X[s:s + chunk]
+            sc = true_score(xs, torch.sqrt(ab) * means_t, v)
+            eps = -torch.sqrt(1 - ab) * sc
+            x0 = (xs - torch.sqrt(1 - ab) * eps) / torch.sqrt(ab)
+            X[s:s + chunk] = torch.sqrt(abp) * x0 + torch.sqrt(1 - abp) * eps
+    return X
+
+
 # --------------------------------------------------------------------------------------
-# true-score atlas: filled disk (mode) + shell (hallucination), backtracked
+# labelled anchors planted in DATA space (no model, no backtrack).
+#   ball_anchors        : mode balls + a thin band just outside -> labels {k, -1}, for the
+#                         knn / polar predictors.
+#   altered_knn_anchors : mode-only concentric spheres with radius-decaying weights (no
+#                         hallucination class), for the altered_knn predictor.
+# Callers backtrack these to seed space with the exact field before fitting.
 # --------------------------------------------------------------------------------------
 @torch.no_grad()
-def build_atlas(means_t, R99, K, d, n_disk, abar_true, T_true, variance,
-                shell_w=1.0, device=None):
-    n_shell = max(1, n_disk // 2)
-    seeds_all, labs_all = [], []
+def ball_anchors(means_t, R99, n_per_mode, shell_frac=0.5, shell_sigma=2.0, sigma=None,
+                 seed=0, device=None):
+    """Per mode: n_per_mode points uniform in the R99 ball, plus shell_frac * n_per_mode
+    points uniform in radius over R99 .. R99 + shell_sigma * sigma. Every anchor is coloured
+    with the ground-truth rule L (nearest mode within R99, else -1)."""
+    K, d = means_t.shape
+    g = torch.Generator(device=device).manual_seed(seed)
+    n_shell = max(1, int(round(shell_frac * n_per_mode)))
+    width = shell_sigma * sigma
+    P = []
     for k in range(K):
-        u = torch.rand(n_disk, device=device) ** (1.0 / d)
-        r_in = R99 * u
-        dirs = torch.randn(n_disk, d, device=device)
+        u = torch.rand(n_per_mode, generator=g, device=device) ** (1.0 / d)
+        dirs = torch.randn(n_per_mode, d, generator=g, device=device)
         dirs /= dirs.norm(dim=1, keepdim=True)
-        disk = means_t[k] + r_in[:, None] * dirs
-        seeds_all.append(backtrack_true(disk, means_t, abar_true, T_true, variance))
-        labs_all += [k] * n_disk
-
-        r_sh = R99 * (1 + shell_w * torch.rand(n_shell, device=device))
-        d2 = torch.randn(n_shell, d, device=device)
-        d2 /= d2.norm(dim=1, keepdim=True)
-        shell = means_t[k] + r_sh[:, None] * d2
-        seeds_all.append(backtrack_true(shell, means_t, abar_true, T_true, variance))
-        labs_all += [-1] * n_shell
-    return torch.cat(seeds_all, 0), torch.tensor(labs_all, device=device)
+        P.append(means_t[k] + (R99 * u)[:, None] * dirs)
+        r = R99 + width * torch.rand(n_shell, generator=g, device=device)
+        dirs = torch.randn(n_shell, d, generator=g, device=device)
+        dirs /= dirs.norm(dim=1, keepdim=True)
+        P.append(means_t[k] + r[:, None] * dirs)
+    P = torch.cat(P, 0)
+    return P, label_fate(P, means_t, R99)
 
 
 @torch.no_grad()
-def gauss_vote_all(Xq, anchors, alabels, K, R99, d=None, h_frac=0.3,
-                   q_chunk=2048, a_chunk=100000, device=None):
-    """ALL anchors vote, weighted by exp(-dist^2 / 2h^2). No k, no topk."""
-    na = anchors.shape[0]
-    if d is None:
-        d = anchors.shape[1]
-    h = max(h_frac * R99, 1e-4)
-    inv2h2 = 1.0 / (2 * h * h)
-    if na > 500000:
-        q_chunk = 256
-    elif na > 200000:
-        q_chunk = 512
-    elif na > 50000:
-        q_chunk = 1024
-    Nq = Xq.shape[0]
-    pred = torch.empty(Nq, dtype=torch.long, device=Xq.device)
-    ls = alabels + 1
-    nc = K + 1
-    for qs in range(0, Nq, q_chunk):
-        q = Xq[qs:qs + q_chunk]
-        B = q.shape[0]
-        votes = torch.zeros(B, nc, device=Xq.device)
-        for a0 in range(0, na, a_chunk):
-            A = anchors[a0:a0 + a_chunk]
-            dm = torch.cdist(q, A)
-            w = torch.exp(-dm * dm * inv2h2)
-            lab = ls[a0:a0 + a_chunk][None, :].expand(B, -1)
-            votes.scatter_add_(1, lab, w)
-            del dm, w
-        pred[qs:qs + q_chunk] = votes.argmax(1) - 1
-    return pred, na, float(h)
+def altered_knn_anchors(means_t, R99, n_per_mode, n_rings=5, r_max=1.5, weight="linear",
+                        w_min=0.2, sigma=None, seed=0, device=None):
+    """Per mode: n_rings concentric spheres of radius r_j = R99 * r_max * j / n_rings, each
+    labelled with its mode, weighted by a radius-decaying confidence (linear or gaussian).
+    Returns P (n, d), y (n,), w (n,); no hallucination class."""
+    K, d = means_t.shape
+    g = torch.Generator(device=device).manual_seed(seed)
+    per_ring = max(1, n_per_mode // n_rings)
+    P, y, w = [], [], []
+    for k in range(K):
+        for j in range(1, n_rings + 1):
+            r = R99 * r_max * j / n_rings
+            dirs = torch.randn(per_ring, d, generator=g, device=device)
+            dirs /= dirs.norm(dim=1, keepdim=True)
+            P.append(means_t[k] + r * dirs)
+            y += [k] * per_ring
+            if weight == "gaussian":
+                wj = float(np.exp(-r ** 2 / (2 * sigma ** 2)))
+            else:
+                wj = 1.0 - (1.0 - w_min) * (r / (R99 * r_max))
+            w += [wj] * per_ring
+    return (torch.cat(P, 0), torch.tensor(y, device=device),
+            torch.tensor(w, device=device, dtype=torch.float32))
 
 
-# --------------------------------------------------------------------------------------
-# analytic responsibility predictor (no anchors) — the dimension-robust baseline
-# --------------------------------------------------------------------------------------
-@torch.no_grad()
-def responsibilities(X0, means_t, ab, variance):
-    v = float(ab * variance + (1 - ab))
-    sM = torch.sqrt(ab) * means_t
-    d2 = torch.cdist(X0, sM) ** 2
-    return torch.softmax(-d2 / (2 * v), 1)
-
-
-@torch.no_grad()
-def predict_responsibility(X0, means_t, abar, variance, delta=0.1):
-    """Label seeds from the initial noise alone via source-scale responsibility."""
-    ab = abar[-1]
-    w = responsibilities(X0, means_t, ab, variance)
-    pmax, arg = w.max(1)
-    return torch.where(pmax >= 1 - delta, arg, torch.full_like(arg, -1)), w

@@ -33,10 +33,9 @@ class FlowOTProcess(Process):
 
     def __init__(self, means_t, variance, T, device, cfg=None):
         super().__init__(means_t, variance, T, device, cfg)
-        self.sigma_min = float(getattr(getattr(cfg, "flow", {}), "sigma_min", 1e-4)) \
-            if cfg is not None else 1e-4
-        self.solver = str(getattr(getattr(cfg, "flow", {}), "solver", "euler")) \
-            if cfg is not None else "euler"
+        proc = getattr(cfg, "process", None) if cfg is not None else None
+        self.sigma_min = float(getattr(proc, "sigma_min", 1e-4)) if proc is not None else 1e-4
+        self.solver = str(getattr(proc, "solver", "euler")) if proc is not None else "euler"
         # uniform time grid on [0, 1]
         self.ts = torch.linspace(0.0, 1.0, T, device=device)
 
@@ -90,8 +89,8 @@ class FlowOTProcess(Process):
         X = X0.clone()
 
         def f(x, t):
-            ti = (t * (self.T - 1)).round().long().clamp(0, self.T - 1)
-            ti = torch.full((x.shape[0],), int(ti), dtype=torch.long, device=self.device)
+            ti_idx = min(self.T - 1, max(0, int(round(t * (self.T - 1)))))
+            ti = torch.full((x.shape[0],), ti_idx, dtype=torch.long, device=self.device)
             return model(x, ti)
 
         for i in range(self.T - 1):
@@ -132,4 +131,15 @@ class FlowOTProcess(Process):
             for s in range(0, X.shape[0], chunk):
                 xs = X[s:s + chunk]
                 X[s:s + chunk] = self._step(self._true_velocity, xs, t, -dt)
+        return X
+
+    @torch.no_grad()
+    def true_field_forward(self, X0, chunk=50000):
+        """Integrate the analytic marginal velocity FORWARD, t: 0 -> 1 (noise -> data)."""
+        dt = 1.0 / (self.T - 1)
+        X = X0.clone()
+        for i in range(self.T - 1):
+            t = float(self.ts[i])
+            for s in range(0, X.shape[0], chunk):
+                X[s:s + chunk] = self._step(self._true_velocity, X[s:s + chunk], t, dt)
         return X

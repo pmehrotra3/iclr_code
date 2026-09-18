@@ -1,0 +1,5 @@
+name: ddim
+T_train: 1000
+T_true: 1000
+beta_min: 1e-4
+beta_max: 0.02
