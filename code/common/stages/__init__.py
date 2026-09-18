@@ -2,7 +2,7 @@
 from __future__ import annotations
 from omegaconf import DictConfig, OmegaConf
 
-from common.stages import train, evaluate, merge, seedmap, visualize, atlas, atlas_viz
+from common.stages import train, evaluate, merge, seedmap, visualize, atlas, atlas_viz, pullback_iq
 
 STAGES = {
     "train": train.run,
@@ -13,6 +13,8 @@ STAGES = {
     "atlas": atlas.run,
     "atlas_merge": atlas.merge,
     "atlas_viz": atlas_viz.run,
+    "pullback": pullback_iq.run,
+    "pullback_viz": pullback_iq.viz,
 }
 
 

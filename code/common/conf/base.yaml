@@ -11,6 +11,7 @@ process: ???                # set by the process folder (ddim | flow | ...)
 #   train | evaluate | merge | seedmap | visualize      (seed classifier on learned-sampler labels)
 #   atlas | atlas_merge | atlas_viz                     (ring atlas: true-score backtrack -> predictor,
 #                                                        scored on the learned sampler, swept over T)
+#   pullback | pullback_viz                             (Prop. 5 pulled-back normal vs IQ, ddim only)
 stages: [train, evaluate, visualize]
 
 run_tag: ${now:%Y-%m-%d}    # atlas results/figures go under output|visualization/<run_tag>/<process>/
@@ -69,6 +70,32 @@ seedmap:
   extent: 3.5               # window [-extent, extent]^2
   budget: 1000000           # labeled seeds used to fit each classifier panel
   models: all               # all | list of classifier names to draw
+
+# ------------------------------------------------------------------ Prop. 5 normal vs IQ (stage: pullback)
+pullback:
+  d: ${sweep.d}             # cells to study (ddim only; uses the sweep.T_train checkpoint)
+  K: [2, 4]
+  n_seeds: 200000           # seeds drawn to find intermodal hallucinations
+  n_study: 40               # hallucinated seeds studied per cell
+  deep_mult: 1.5            # intermodal = > deep_mult * R99 from every mode, between its two nearest
+  field: learned            # learned | true   -- sampler whose hallucinations we study
+  iq_energy: learned        # learned | true   -- denoiser inside IQ's LID energy (true = exact GMM)
+  lam: 0.0                  # IQ strength; 0 = best-rescuing value from lam_grid
+  lam_grid: [0.001, 0.002, 0.005, 0.01, 0.02, 0.05]
+  iq_t0: 0.02               # time at which the DSM loss (LID estimate) is evaluated
+  iq_window: 1.0            # IQ active for t <= iq_window (1.0 = whole run)
+  n_mc: 64                  # noise draws in the LID estimate (antithetic pairs)
+  n_rand: 16                # random directions per seed for the efficiency baseline
+  n_tan: 4                  # tangent directions per anchor for the Prop. 4 tangent control
+  tang_mult: 1.0            # tangent step size, in units of eps* (Prop. 4 is first order in eps)
+  eps_max: 3.0              # largest seed step searched along a direction
+  n_eps_grid: 80
+  newton_iters: 4           # per-step Newton iterations when inverting IQ endpoints
+  seed: 0
+  ckpt_process: null        # checkpoints/sampler to use; null = cfg.process (set to ddim when
+                            # running this stage from another process's main, e.g. baselines)
+  animate: true             # d = 2: also write the trajectory animation (pullback_viz)
+  anim_frames: 120          # sampling steps shown in the animation (subsampled if T is larger)
 
 # ------------------------------------------------------------------ paths (repo-root relative)
 paths:

@@ -33,3 +33,6 @@ dist/
 # To also drop figures from the repo, uncomment:
 # visualization/**/*.pdf
 # visualization/**/*.png
+checkpoints/
+output/
+visualization/
