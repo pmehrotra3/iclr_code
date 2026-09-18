@@ -1,20 +1,18 @@
-"""common/stages — the pipeline. Each stage is run(cfg) -> dict and is process-agnostic."""
+"""common/stages — the pipeline: train -> atlas -> atlas_viz. Each stage is run(cfg) -> dict."""
 from __future__ import annotations
 from omegaconf import DictConfig, OmegaConf
 
-from common.stages import train, evaluate, merge, seedmap, visualize, atlas, atlas_viz, pullback_iq
+from common.stages import train, atlas, atlas_viz, pullback_iq
 
 STAGES = {
-    "train": train.run,
-    "evaluate": evaluate.run,
-    "merge": merge.run,
-    "seedmap": seedmap.run,
-    "visualize": visualize.run,
-    "atlas": atlas.run,
-    "atlas_merge": atlas.merge,
+    "train": train.run,              # learned samplers, one per (d, K), cached in checkpoints/
+    "atlas": atlas.run,              # plant -> backtrack -> fit -> score (the experiment)
+    "atlas_merge": atlas.merge,      # combine per-d shards written by scripts/run.sh
     "atlas_viz": atlas_viz.run,
     "pullback": pullback_iq.run,
     "pullback_viz": pullback_iq.viz,
+    "pullback_sweep": pullback_iq.run_sweep,
+    "pullback_sweep_viz": pullback_iq.sweep_viz,      # heatmaps, curves, tables from atlas_results.json
 }
 
 

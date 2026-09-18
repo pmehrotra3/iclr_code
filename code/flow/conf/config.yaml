@@ -1,9 +1,9 @@
-# flow — Flow Matching, OT conditional path (Lipman et al. 2022).
+# flow — OT flow matching (Lipman et al.), deterministic ODE sampler.
 # Composes the shared groups in common/conf; everything below is flow-specific or an override.
 defaults:
   - base
   - sweep: full
-  - classifier: mlp
+  - classifier: atlas
   - override hydra/job_logging: disabled
   - _self_
 
@@ -15,4 +15,5 @@ process: flow
 
 flow:
   sigma_min: 0.0001         # sigma_min in Eq. 20-23
-  solver: euler             # euler | midpoint | rk4
+  solver: euler             # euler | heun | midpoint | rk4 -- the learned sampler (the ground truth)
+  true_solver: heun         # integrator of the EXACT-velocity passes (analytic control, anchor backtrack)

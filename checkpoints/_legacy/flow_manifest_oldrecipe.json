@@ -1,0 +1,47 @@
+{
+  "64_2": {
+    "d": 64,
+    "K": 2,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d64_K2_T150.pt",
+    "status": "trained",
+    "hall_rate": 0.029600000008940697,
+    "steps": 16875,
+    "secs": 43.6
+  },
+  "64_4": {
+    "d": 64,
+    "K": 4,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d64_K4_T150.pt",
+    "status": "trained",
+    "hall_rate": 0.026200000196695328,
+    "steps": 18750,
+    "secs": 47.4
+  },
+  "64_8": {
+    "d": 64,
+    "K": 8,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d64_K8_T150.pt",
+    "status": "trained",
+    "hall_rate": 0.020899999886751175,
+    "steps": 38250,
+    "secs": 152.8
+  },
+  "64_16": {
+    "d": 64,
+    "K": 16,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d64_K16_T150.pt",
+    "status": "trained",
+    "hall_rate": 0.018299998715519905,
+    "steps": 86700,
+    "secs": 421.1
+  },
+  "64_32": {
+    "d": 64,
+    "K": 32,
+    "path": "/home/pmehrotra3/workspace/iclr_code/checkpoints/flow/model_d64_K32_T150.pt",
+    "status": "trained",
+    "hall_rate": 0.02499999850988388,
+    "steps": 76500,
+    "secs": 304.9
+  }
+}

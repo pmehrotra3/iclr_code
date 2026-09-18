@@ -24,7 +24,8 @@ class FlowOTProcess(Process):
         super().__init__(means_t, variance, T, device, cfg)
         fc = getattr(cfg, "flow", None)
         self.sigma_min = float(getattr(fc, "sigma_min", 1e-4))
-        self.solver = str(getattr(fc, "solver", "euler"))
+        self.solver = str(getattr(fc, "solver", "euler"))                # learned sampler
+        self.true_solver = str(getattr(fc, "true_solver", self.solver))  # exact-velocity passes
         self.ts = torch.linspace(0.0, 1.0, T, device=device)
 
     def extra_ckpt(self):
@@ -36,42 +37,45 @@ class FlowOTProcess(Process):
     def train_model(self, K, d, n_steps, lr, batch, seed):
         torch.manual_seed(seed)
         model = self.build_model(d)
-        opt = torch.optim.Adam(model.parameters(), lr=lr)
         sigma = self.variance ** 0.5
         oms = 1.0 - self.sigma_min
-        for _ in range(n_steps):
+
+        def loss_fn(batch):
             x1 = gmm.sample_data(self.means_t, sigma, batch, self.device)
             x0 = torch.randn(batch, d, device=self.device)
             t = torch.rand(batch, device=self.device)
             psi = (1 - oms * t)[:, None] * x0 + t[:, None] * x1            # Eq. 22
             target = x1 - oms * x0                                         # Eq. 23
             ti = (t * (self.T - 1)).round().long().clamp(0, self.T - 1)    # embedding index
-            loss = ((model(psi, ti) - target) ** 2).mean()
-            opt.zero_grad(); loss.backward(); opt.step()
-        return model
+            return ((model(psi, ti) - target) ** 2).mean()
+        return self.fit(model, loss_fn, n_steps, lr, batch)
 
     # ---- ODE solvers ----
-    def _step(self, f, x, t, dt):
-        if self.solver == "euler":
+    def _step(self, f, x, t, dt, solver=None):
+        solver = solver or self.solver
+        if solver == "euler":
             return x + dt * f(x, t)
-        if self.solver == "midpoint":
+        if solver == "heun":
+            k1 = f(x, t)
+            return x + 0.5 * dt * (k1 + f(x + dt * k1, t + dt))
+        if solver == "midpoint":
             k1 = f(x, t)
             return x + dt * f(x + 0.5 * dt * k1, t + 0.5 * dt)
-        if self.solver == "rk4":
+        if solver == "rk4":
             k1 = f(x, t)
             k2 = f(x + 0.5 * dt * k1, t + 0.5 * dt)
             k3 = f(x + 0.5 * dt * k2, t + 0.5 * dt)
             k4 = f(x + dt * k3, t + dt)
             return x + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
-        raise ValueError(f"unknown solver {self.solver!r}")
+        raise ValueError(f"unknown solver {solver!r}")
 
-    def _integrate(self, f, X0, chunk):
+    def _integrate(self, f, X0, chunk, solver=None):
         dt = 1.0 / (self.T - 1)
         X = X0.clone()
         for i in range(self.T - 1):
             t = float(self.ts[i])
             for s in range(0, X.shape[0], chunk):
-                X[s:s + chunk] = self._step(f, X[s:s + chunk], t, dt)
+                X[s:s + chunk] = self._step(f, X[s:s + chunk], t, dt, solver)
         return X
 
     @torch.no_grad()
@@ -108,7 +112,7 @@ class FlowOTProcess(Process):
 
     @torch.no_grad()
     def true_forward(self, X0, chunk=50000):
-        return self._integrate(self._true_velocity, X0, chunk)
+        return self._integrate(self._true_velocity, X0, chunk, self.true_solver)
 
     @torch.no_grad()
     def true_backward(self, Xd, chunk=50000):
@@ -118,5 +122,5 @@ class FlowOTProcess(Process):
         for i in reversed(range(1, self.T)):
             t = float(self.ts[i])
             for s in range(0, X.shape[0], chunk):
-                X[s:s + chunk] = self._step(self._true_velocity, X[s:s + chunk], t, -dt)
+                X[s:s + chunk] = self._step(self._true_velocity, X[s:s + chunk], t, -dt, self.true_solver)
         return X

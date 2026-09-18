@@ -1,172 +1,135 @@
-# Seed-fate atlas — predicting a sampler's fate from the seed alone
+# Seed-fate atlas — where does a seed go, according to the exact score?
 
-Deterministic samplers (DDIM, flow-matching ODEs) map an initial Gaussian seed to a
-data-space endpoint. On a Gaussian-mixture reference over a `(d, K)` sweep this repo asks:
-**from the seed alone, can you tell which mode a sample will land in, or that it will
-hallucinate (land outside every mode)?** — and how simple the seed → fate map is.
-
-Each generative process lives in its own folder with its own Hydra entry point and config;
-the shared library `code/common/` provides the reference GMM, the network backbone, the seed → fate
-classifiers, and process-agnostic pipeline stages, so every process produces the same
-results files, figures and tables.
+A deterministic sampler (DDIM, a flow-matching ODE) maps a Gaussian seed to a data-space
+endpoint. On a Gaussian-mixture reference over a `(d, K)` grid this repo asks: **can the seed's
+fate — which mode it lands in, or that it hallucinates — be read off a picture of seed space
+built from the exact score alone, with no model in the loop?** The trained network is used
+once, to produce the ground truth the picture is scored against.
 
 ```
 code/
   common/            shared library
-    gmm.py            K isotropic modes on a sphere; R99; fate labels; closed-form score
+    gmm.py            K isotropic modes on a sphere; R99; the labelling rule L; anchors; closed-form score
     nets.py           ScoreNet backbone (eps for ddim, velocity for flow)
-    fate.py           seed -> fate classifiers: knn | kernel | altered_knn | linear | margin | radial | quadratic | poly | polar | mlp
-    process.py        Process contract + registry (@register / load_process)
-    checkpoint.py     checkpoint format shared by all processes
-    stages/           train | evaluate | merge | seedmap | visualize   (all take cfg)
-    conf/             shared Hydra groups: base.yaml, sweep/{full,ladder,quick,atlas},
-                      classifier/{mlp,polar,linear,quadratic,knn,kernel,altered_knn,ladder,atlas}
-  ddim/               VP diffusion + deterministic DDIM     (process.py, main.py, conf/config.yaml)
-  flow/               OT flow matching, Euler/midpoint/RK4  (process.py, main.py, conf/config.yaml)
-scripts/              run.sh (one process) | run_parallel.sh (split by d over GPUs) | run_all.sh | run_atlas.sh (ring-atlas T sweep)
-checkpoints/<process>/    model_d{d}_K{K}.pt + manifest.json     (train)
-output/<process>/         results[_tag].{json,csv}               (evaluate / merge)
-visualization/<process>/  figures, seed maps, LaTeX tables        (visualize / seedmap)
+    process.py        Process contract + registry; Process.fit = the training recipe (EMA, cosine lr, clip)
+    fate.py           the predictor family: knn | kernel | altered_knn | linear | quadratic | polar | mlp
+    checkpoint.py     checkpoint format (carries the training recipe; stale checkpoints retrain)
+    stages/           train | atlas | atlas_merge | atlas_viz
+    conf/             base.yaml, sweep/{full,d2,quick}, classifier/{atlas,fast}
+  ddim/               VP diffusion + deterministic DDIM        (process.py, main.py, conf/config.yaml)
+  flow/               OT flow matching, deterministic ODE       (process.py, main.py, conf/config.yaml)
+scripts/run.sh        the experiment: shard the grid by d over GPUs, merge, draw
+checkpoints/<process>/model_d{d}_K{K}_T150.pt      the learned samplers (+ manifest.json)
+output/[<run_tag>/]<process>/                       results, tables, figures
 ```
 
-## Install
+## Install and run
 
 ```bash
-python -m venv venv && source venv/bin/activate
-pip install -e .            # or: pip install -r requirements.txt and run from the repo root
-export ATLAS_ROOT=$(pwd)    # where checkpoints/ output/ visualization/ go (defaults to $PWD)
+python -m venv venv && source venv/bin/activate && pip install -r requirements.txt
+export ATLAS_ROOT=$(pwd)
+
+scripts/run.sh                                     # both processes, the full grid  (~hours on 4 GPUs)
+scripts/run.sh ddim flow sweep=d2 classifier=fast  # d = 2, four predictors          (~20 min)
+scripts/run.sh ddim stages=[atlas_viz]             # re-draw from output/ddim/atlas_results.json
+python code/ddim/main.py sweep=quick classifier=fast anchors.budgets=[20000] eval.n_eval=20000   # smoke test
+python code/ddim/main.py --cfg job                 # print the composed config
 ```
 
-## Run
+Every knob is a Hydra override (`sweep.K=[4,16] anchors.budgets=[50000] eval.n_eval=100000
+run_tag=try1 data.sigma=0.2 ddim.true_solver=euler ...`); `code/common/conf/base.yaml` documents them.
 
-```bash
-python code/ddim/main.py                               # ddim: train -> evaluate -> visualize
-python code/flow/main.py                               # same for flow matching
-scripts/run_parallel.sh ddim                      # evaluate split by d over all GPUs, merge, plot
-scripts/run_all.sh                                # both processes end to end
-```
+## The method
 
-Every knob is a Hydra override; the process folders share the same ones:
+Per `(d, K)` cell (`code/common/stages/atlas.py`):
 
-```bash
-# which stages
-python code/ddim/main.py stages=[evaluate,visualize]                 # reuse checkpoints
-python code/ddim/main.py stages=[visualize]                          # re-plot results.json only
-python code/ddim/main.py stages=[seedmap] seedmap.K=[4,8,16]         # d=2 seed-space maps
+**Step 0 — Reference mixture.** K isotropic Gaussians of std σ, centres on the sphere of radius 2.
+R99 is the radius holding 99 % of a mode's mass. The labelling rule **L**: a point belongs to mode
+k if μ_k is its nearest centre and lies within R99; otherwise it is a *hallucination* (−1).
 
-# sweep and budgets
-python code/ddim/main.py sweep=quick                                 # 2 cells, one small budget
-python code/ddim/main.py sweep.d=[2,8,32] sweep.K=[8] sweep.budgets=[200000,2000000]
+**Step 1 — Plant labelled anchors in data space.** No model. Around each centre: points uniform in
+the R99 ball, plus half as many uniform in radius over the band R99 … R99 + 2σ just outside it —
+the hypothesis under test, that hallucinations live in a thin band around each mode. Every anchor
+is coloured with L (`gmm.ball_anchors`). Budgets `anchors.budgets` = 20k / 50k / 100k anchors per
+cell; every budget is fitted and the best is reported.
 
-# which classifiers (the capacity ladder)
-python code/ddim/main.py classifier=mlp                              # universal-approximator ceiling (default)
-python code/ddim/main.py classifier=polar                            # degree-8 polynomial in (direction, radius) + margin
-python code/ddim/main.py classifier=knn classifier._shared.k=25      # k-nearest-neighbour vote (no training)
-python code/ddim/main.py classifier=kernel classifier._shared.bandwidth=2   # Gaussian-kernel vote
-scripts/run_atlas.sh ddim classifier=altered_knn anchors.rings.n_rings=8    # weighted ring kNN, low confidence = hallucination
-python code/ddim/main.py classifier=quadratic                        # quadratic boundaries (explicit + polar deg 2)
-python code/ddim/main.py classifier=linear                           # hyperplanes (+ margin, + norm term)
-python code/ddim/main.py classifier=ladder sweep=ladder              # linear .. polar1..8 .. mlp, all cells at 1M seeds
-python code/ddim/main.py classifier.models.0.degree=4 classifier.primary=polar8
-python code/ddim/main.py "classifier.models=[{name: p3, arch: polar, degree: 3}]" classifier.primary=p3
+**Step 2 — Backtrack every anchor to seed space with the exact score.** Reverse DDIM (or the
+reverse OT flow) for T steps driven by the closed-form score of the noised mixture, carrying the
+colour. A Heun predictor–corrector step (`ddim.true_solver`, `flow.true_solver`) makes the
+backward and forward passes exact inverses: the *roundtrip* check (backtrack, push forward, compare
+L) is 1.000. T ∈ `sweep.T_atlas` = 100 / 200 / 500 / 1000.
 
-# whose fate is the ground truth
-python code/ddim/main.py eval.labels=true eval.tag=true              # exact-score control: results_true.json,
-                                                                #   figures under visualization/ddim/true/
-# process-specific knobs
-python code/ddim/main.py ddim.beta_max=15 train.force_retrain=true
-python code/flow/main.py flow.solver=rk4 flow.sigma_min=0.001
-python code/flow/main.py train.net.h=512 train.net.nb=6
-```
+**Step 3 — Fit predictors on the labelled seed picture, and nothing else.** Seeds enter as
+φ(z) = (z/‖z‖, ‖z‖) where the family uses it. The family (`classifier=atlas`, `common/fate.py`):
+kNN and Gaussian-kernel votes; linear; quadratic; polynomials in (direction, radius) of degree 2, 3
+and 8; a depth-4 MLP ceiling. Each parametric model is also reported **prior-calibrated**
+(`<name>_cal`): its hallucination cut is shifted so it calls exactly as many seeds hallucinations
+as the exact score does at that T (measured on `anchors.n_calibrate` exact-score-labelled seeds).
+`altered_knn` differs in kind: it trains on mode-labelled anchors only (`gmm.altered_knn_anchors`,
+concentric spheres with radius-decaying weights) and declares a hallucination when the k-nearest
+vote is low-confidence (`1 − H(p)/log K < threshold`, threshold chosen on exact-score labels), so it
+tests whether hallucination regions are identifiable as "nowhere in particular". Reported separately.
 
-`python code/<process>/main.py --cfg job` prints the fully composed config; `--help` lists the groups.
+**Step 4 — Ground truth from the learned sampler.** `eval.n_eval` = 200 000 fresh Gaussian seeds
+pushed through the trained network Φθ with its own plain sampler at `sweep.T_train` = 150 steps
+and labelled with L. The only place the model is used.
 
-### Ring atlas: true-score backtrack → predictor, swept over T
+**Step 5 — Score, and the analytic control.** Each predictor labels the same seeds; report overall
+accuracy, mode accuracy / mode-basin F1, hallucination precision / recall / F1. The control pushes
+the seeds through the exact score — at the atlas T (`analytic`) and at T_train
+(`analytic_T_train`). **The control is a ceiling, not a baseline**: it says how much of the learned
+sampler's behaviour the exact score explains at all; no predictor built from the exact score can
+beat it, and a cell where it scores badly is measuring model error, not predictor quality.
+Diagnostic `hall_dist`: where the sampler's real hallucinations land, in σ beyond R99 (98–100 %
+within 2σ at d = 2 — the band hypothesis holds).
 
-```bash
-scripts/run_atlas.sh                       # ddim then flow; each split by d over all GPUs
-scripts/run_atlas.sh ddim                  # one process
-scripts/run_atlas.sh ddim anchors.n_per_mode=1000 train.force_retrain=true
-python code/ddim/main.py sweep=atlas classifier=atlas stages=[atlas,atlas_viz]   # single GPU
-python code/ddim/main.py sweep=atlas classifier=atlas stages=[atlas_viz] run_tag=2026-09-15  # re-plot
-```
+**Step 6 — Sweep** over the `(d, K)` grid, T and the anchor budget (`sweep=full`).
 
-Per `(d, K)`: the learned sampler (`sweep.T_train` = 150 steps, trained on demand until its
-hallucination rate ≤ `train.hall_target` = 3 %, cached in `checkpoints/<process>/model_d{d}_K{K}_T150.pt`
-until `train.force_retrain=true`) labels `eval.n_eval` = 20000 forward seeds as ground truth.
-For every T in `sweep.T_atlas` (50 … 1000 step 50): `anchors.n_per_mode` = 500 data-space points
-per mode uniform in the R99 ball (label = mode) plus `anchors.shell_frac` × 500 in the shell
-R99 … (1 + `anchors.shell_w`) R99 (label = hallucination) are backtracked to seed space with the
-**true** score at T steps; every predictor in `classifier=atlas` (knn, altered_knn, kernel, linear,
-quadratic, polar2, polar3, polar8, mlp) is fit on those anchors and scored on the learned sampler's
-20000 seeds.
+### The learned sampler (`stages/train.py`, `Process.fit`)
 
-`altered_knn` uses its own anchor set (`anchors.rings`, saved as `anchors/d{d}_K{K}_T{T}_rings.npz`):
-per mode, `n_rings` concentric spheres of radius up to `r_max`·R99, every anchor labeled with its mode
-and weighted by a radius-decaying confidence (`weight: linear | gaussian`) — **no hallucination class**.
-A seed's k nearest anchors cast a weighted vote, `p = softmax(vote / temperature)`, and the seed is
-declared a hallucination when the vote is low-confidence: `1 − H(p)/log K < threshold` (or `max p`
-with `confidence: max`). `threshold: auto` picks the cut that maximises hallucination F1 on
-`anchors.n_calibrate` seeds labeled by the **true** score at the same T (no learned-model information);
-the chosen cut and its calibration F1 are stored per cell in `results.json` (`fit`). Outputs are dated:
+One ScoreNet (h = 256, 4 blocks) per cell, denoising-score-matching / flow-matching loss,
+30 000·(1 + d/16)(1 + K/16) steps of Adam with **cosine lr decay to 1 %, gradient clipping at 1
+and an EMA of the weights (0.999)**; retrained with 1.7× more steps (≤ 4 attempts) until its
+hallucination rate is ≤ 1 % + 0.5 % (1 % = 1 − `data.mass_q`, the mass a *perfect* sampler leaves
+outside the R99 balls). Checkpoints store the recipe and retrain on demand when it changes.
+
+### Outputs
 
 ```
-output/<date>/<process>/T_<T>/results.{json,csv}      per-cell metrics at that T; summary.csv over T
-output/<date>/<process>/T_<T>/tables.{tex,txt}        one (K x d) table per predictor family, cell =
-                                                       overall acc / mode-basin F1 / hallucination F1 (%);
-                                                       all_tables.{tex,txt} = every T in one file
-output/<date>/<process>/anchors/d{d}_K{K}_T{T}.npz     the anchor set behind each number: P (data space),
-                                                       y (labels), A (backtracked seeds), y_roundtrip; anchors.json
-visualization/<date>/<process>/T_<T>/heatmap_full_acc  overall accuracy over the (d, K) grid
-                                     heatmap_hall_f1   hallucination F1
-                                     heatmap_mode_f1   mode-basin F1
-                                     heatmap_roundtrip anchors that return to their label (sanity)
-                                     anchors_K{K}      d = 2: the anchors in data space and in seed space
-visualization/<date>/<process>/summary_vs_T, table_atlas.tex
+output/<process>/atlas_results.json      every cell, T, budget, predictor (the figures read this)
+output/<process>/summary.csv             mean over cells per (T, predictor) at the best budget
+output/<process>/T_<T>/results.csv       one row per (cell, predictor, budget): metrics, roundtrip_acc
+output/<process>/T_<T>/<model>/heatmap_{full_acc,mode_f1,hall_f1}   (K x d) grids, winning budget in brackets
+output/<process>/T_<T>/summary_all_models_<metric>                  every predictor side by side
+output/<process>/summary_vs_T.{png,pdf}  mean metrics vs T, every predictor and the control
+output/<process>/best_T_table.{tex,png}  best T per predictor and the full grid at the best (predictor, T)
 ```
 
-Metric definitions (`common/fate.py: fate_metrics`): **overall accuracy** — fraction of held-out
-seeds whose fate (mode k or hallucination) is predicted exactly; **hallucination F1** — one-vs-rest
-F1 of the hallucination class; **mode-basin F1** — macro average over the K modes of the one-vs-rest
-F1 of "predicted mode k" vs "truly mode k" (a hallucinating seed predicted as k counts against k).
+Metrics (`fate.fate_metrics`): **overall accuracy** — seeds whose fate (mode k or hallucination) is
+predicted exactly; **mode-basin F1** — macro one-vs-rest F1 over modes (a hallucinating seed
+predicted as k counts against k); **hallucination F1** — one-vs-rest F1 of the hallucination class.
 
-## The pipeline
+## Results at d = 2 (σ = 0.1, T = 500, 200k seeds; `output/ddim`, `output/flow`)
 
-| stage | what it does | writes |
-|---|---|---|
-| `train` | one model per `(d, K)`; retrained with more steps until its hallucination rate ≤ `train.hall_target` | `checkpoints/<process>/model_d{d}_K{K}.pt` |
-| `evaluate` | label held-out seeds with the ground-truth sampler; score the **analytic-field** forward pass and every classifier in `classifier.models` at every budget in `sweep.budgets` | `output/<process>/results[_tag].{json,csv}` |
-| `merge` | combine `output/<process>/_parts/*/` (from `run_parallel.sh`) into one results file | same |
-| `seedmap` | d = 2 fate maps: truth, the other sampler, every classifier with its errors in red | `visualization/<process>/seedmap_K{K}.{png,pdf}` |
-| `visualize` | accuracy vs d / budget, hallucination F1, heatmaps, capacity ladder, LaTeX tables | `visualization/<process>[/tag]/` |
-| `atlas` | ring atlas over T (see below); `atlas_merge` combines parallel parts, `atlas_viz` draws the per-T heatmaps | `output/<date>/<process>/T_<T>/`, `visualization/<date>/<process>/T_<T>/` |
+| K | ddim ceiling | ddim polar8_cal | flow ceiling | flow polar8_cal |
+|---|---|---|---|---|
+| 2 | 0.990 | 0.990 | 0.995 | 0.995 |
+| 4 | 0.984 | 0.983 | 0.989 | 0.988 |
+| 8 | 0.973 | 0.971 | 0.981 | 0.978 |
+| 16 | 0.962 | 0.962 | 0.980 | 0.978 |
 
-**Ground truth** (`eval.labels`): `learned` (default) — the trained model's sampler; `true` — the
-analytic-field sampler (exact score / exact OT velocity), the control that shows how predictable
-fate is when the model is perfect.
-
-**Predictors**: `analytic` — run the analytic-field sampler on the seed and read off the mode
-(no training; cannot see the learned model's errors). `classifier.models` — trained on seeds
-labeled by the ground-truth sampler; `arch` fixes the boundary geometry (see `common/fate.py`):
-`knn` / `kernel` (non-parametric votes over the labeled seeds) · `linear` (hyperplanes) → `radial`
-(+‖x‖²) → `quadratic` → `polar` (degree-p polynomial in direction × radius, hallucination = margin
-band around a mode boundary) → `mlp` (universal). Presets: `classifier=mlp|polar|linear|quadratic|
-knn|kernel|ladder|atlas`; any list of `{name, arch, …}` entries works inline.
-
-## Adding a process
-
-Create `code/<name>/process.py` with a class decorated `@register("<name>")` implementing
-`build_model`, `train_model`, `sample`, `true_forward` (and optionally `extra_ckpt`), copy
-`code/ddim/main.py` and `code/ddim/conf/config.yaml`, set `process: <name>` and add any
-process-specific knobs. Nothing else changes — the stages, figures and tables are process-agnostic.
+Every model-free predictor sits within ~0.3 pt of the analytic ceiling; the residual (0.5–4 %,
+growing with K) is the learned sampler's own disagreement with the exact score, concentrated in a
+thin band along the basin boundaries.
 
 ## Notes
 
-- **Noise schedule (ddim).** The continuous VP schedule keeps ᾱ_T ≈ 4e-5 for any `T`; the
-  discrete DDPM `linspace(1e-4, 0.02, T)` schedule only reaches pure noise at `T = 1000` and at
-  `T = 100` leaves ᾱ_T ≈ 0.36, which silently corrupts the seed → fate map. Checkpoints carry a
-  `schedule` tag and are retrained if it is stale.
-- **Budgets.** Labeling costs ≈ 10 s per 1M seeds on one GPU; the MLP ensemble ≈ 45 s per budget,
-  the polynomial families ≈ 20 s. The full grid × 3 budgets is ≈ 1 h per process on 4 GPUs.
-- **Reproducibility.** Seeds are fixed (`seed`, `eval.seed_offset`); the same seeds are used for
-  every classifier so ladders compare like with like.
+- **Anchors must be coloured by L, not by the planting mode.** At d = 2 centres are only forced
+  3σ apart while R99 = 3.03σ, so balls overlap; colouring by planting mode mislabels 15–50 % of the
+  anchors before any dynamics and costs up to 8 pts of accuracy.
+- **Noise schedule (ddim).** Continuous VP, ᾱ_T ≈ 4e-5 for any T; checkpoints carry a schedule tag.
+- **Costs.** Heun doubles the exact-score passes; the d = 2 grid is ~20 min per process, the full
+  grid a few hours on 4 GPUs, dominated by training at d = 32.
+- **Adding a process.** `code/<name>/process.py` with `@register("<name>")` implementing
+  `build_model`, `train_model` (call `self.fit`), `sample`, `true_forward`, `true_backward`; copy
+  `code/ddim/main.py` and `conf/config.yaml`. Stages and figures are process-agnostic.
