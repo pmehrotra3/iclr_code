@@ -1,0 +1,11 @@
+- process=flow
+- process.T_train=150
+- process.T_true=300
+- sweep.d=[2,4,8,16,32,64]
+- sweep.K=[2,4,8,16,32]
+- sweep.anchors=[2000,5000,10000,20000,50000,100000]
+- data.radius=2.0
+- stages=[evaluate,visualize]
+- train.force_retrain=false
+- run_id=2026-09-19_04-50-15
+- device=cuda
