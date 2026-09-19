@@ -3,6 +3,22 @@
     "d": 2,
     "K": 2,
     "path": "/Users/pranavmehrotra/Desktop/iclr_code/data/flow/checkpoints/model_d2_K2.pt",
-    "status": "cached"
+    "status": "trained",
+    "hall_rate": 0.012600000016391277,
+    "converged": true,
+    "steps": 3796,
+    "attempts": 1,
+    "secs": 40.2
+  },
+  "2_4": {
+    "d": 2,
+    "K": 4,
+    "path": "/Users/pranavmehrotra/Desktop/iclr_code/data/flow/checkpoints/model_d2_K4.pt",
+    "status": "trained",
+    "hall_rate": 0.029100000858306885,
+    "converged": true,
+    "steps": 7170,
+    "attempts": 2,
+    "secs": 116.1
   }
 }

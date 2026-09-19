@@ -37,6 +37,22 @@ def resolve_run_dir(base, sampler, run_id):
     if os.path.exists(os.path.join(d, "results.json")):
         return d
     return latest_run_dir(base, sampler)
+
+
+def sweep_dir(base, run_id, sampler, T_true):
+    """output/<run_id>/<sampler>/T<T_true> — one folder per (run, process, T).
+    d is a heatmap axis (not a folder), so a whole d x K grid lives in one folder."""
+    return os.path.join(base, str(run_id), sampler, f"T{int(T_true)}")
+
+
+def resolve_sweep_dir(base, run_id, sampler, T_true):
+    """The sweep_dir for this run if it has results, else the newest run that does."""
+    d = sweep_dir(base, run_id, sampler, T_true)
+    if os.path.exists(os.path.join(d, "results.json")):
+        return d
+    pat = os.path.join(base, "*", sampler, f"T{int(T_true)}", "results.json")
+    hits = sorted(glob.glob(pat))
+    return os.path.dirname(hits[-1]) if hits else None
  
  
 def ckpt_path(data_dir, sampler, d, K):
@@ -56,9 +72,12 @@ def train_one(cfg, d, K, device):
  
     sigma = cfg.data.sigma
     variance = sigma ** 2
+    # the mode-sphere radius scales with d (R(d) = data.radius * sqrt(d/2), so d=2 -> data.radius),
+    # keeping the modes resolvable as the dimension grows.
+    radius = float(cfg.data.radius) * (d / 2.0) ** 0.5
     try:
         means_t, min_sep = core.sample_modes(
-            K, d, cfg.data.radius, sigma, cfg.data.m_mult, seed=cfg.seed, device=device
+            K, d, radius, sigma, cfg.data.m_mult, seed=cfg.seed, device=device
         )
     except RuntimeError as e:
         # sample_modes is the only geometry failure; re-raise as a distinct type so run()

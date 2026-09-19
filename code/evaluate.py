@@ -24,7 +24,7 @@ from omegaconf import OmegaConf
 import core
 import fate
 from processes.factory import make_process
-from train import ckpt_path, run_dir
+from train import ckpt_path, sweep_dir
 
 
 def load_ckpt(path, device):
@@ -117,7 +117,7 @@ def eval_one(cfg, d, K, device):
 def run(cfg):
     device = core.get_device(cfg.device)
     sampler = cfg.process.name
-    out_dir = run_dir(cfg.paths.output, sampler, cfg.run_id)
+    out_dir = sweep_dir(cfg.paths.output, cfg.run_id, sampler, cfg.process.T_true)
     os.makedirs(out_dir, exist_ok=True)
     primary = str(cfg.classifier.primary)
 

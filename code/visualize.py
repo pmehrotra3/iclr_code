@@ -3,14 +3,14 @@ visualize.py — Stage 3. Turn a run's results.json into heatmaps and a table (n
 
 One unified schema for every process: flat rows of (d, K, budget, model) with fate metrics.
 
-Layout under the run directory (output/<process>/<timestamp>/figures/):
+Layout (output/<run_id>/<process>/T<T_true>/):
 
-    table.tex                         the table, before the T folder
+    results.json, results.csv
+    table.tex                         the table (best anchor budget per cell)
     table.png
-    <model>.png                       heatmaps per model (best anchor budget), before the T folder
-    T<T_true>/
-        anchors_<b>/
-            <model>.png               heatmaps per model AT that anchor budget ("anchors after every t")
+    <model>.png                       heatmaps per model, best anchor budget
+    anchors_<b>/
+        <model>.png                   heatmaps per model AT that anchor budget
 
 Each <model>.png is a row of (d, K) heatmaps: full accuracy / mode F1 / hallucination F1.
 """
@@ -24,16 +24,16 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from train import resolve_run_dir
+from train import resolve_sweep_dir
 
 PANELS = [("full_acc", "full accuracy"), ("mode_f1", "mode F1"), ("hall_f1", "hallucination F1")]
 
 
 def _load(cfg):
-    d = resolve_run_dir(cfg.paths.output, cfg.process.name, cfg.run_id)
+    d = resolve_sweep_dir(cfg.paths.output, cfg.run_id, cfg.process.name, cfg.process.T_true)
     if d is None:
         raise FileNotFoundError(
-            f"no results found under {cfg.paths.output}/{cfg.process.name}/")
+            f"no results found for {cfg.process.name} T={cfg.process.T_true} under {cfg.paths.output}")
     with open(os.path.join(d, "results.json")) as f:
         return json.load(f), d
 
@@ -180,9 +180,8 @@ def run(cfg) -> dict:
     ds, Ks = _axes(results)
     models = _models(results)
 
-    fig_dir = os.path.join(src, "figures")
-    os.makedirs(fig_dir, exist_ok=True)
-
+    # src is already output/<run_id>/<process>/T<T> -- write straight into it (no figures/, no
+    # inner T folder; d is a heatmap axis, not a directory).
     made = []
 
     def attempt(fn, *args):
@@ -192,17 +191,16 @@ def run(cfg) -> dict:
             print(f"[viz] {fn.__name__} failed:")
             traceback.print_exc()
 
-    # -- before the T folder, under the timestamp: the table + best-budget heatmaps
-    attempt(write_summary_tex, results, ds, Ks, models, sampler, T_true, fig_dir)
-    attempt(write_summary_png, results, ds, Ks, models, sampler, T_true, fig_dir)
+    # table + best-budget heatmaps, directly under the T folder
+    attempt(write_summary_tex, results, ds, Ks, models, sampler, T_true, src)
+    attempt(write_summary_png, results, ds, Ks, models, sampler, T_true, src)
     for m in models:
         attempt(plot_model, _cellmap(results, m), ds, Ks, m,
-                f"{m} (% correct, best anchor budget)", fig_dir)
+                f"{m} (% correct, best anchor budget)", src)
 
-    # -- anchors after every T: one folder per budget, heatmaps at that budget
-    t_dir = os.path.join(fig_dir, f"T{T_true}")
+    # one folder per anchor budget, beside the table
     for b in _budgets(results):
-        adir = os.path.join(t_dir, f"anchors_{b}")
+        adir = os.path.join(src, f"anchors_{b}")
         os.makedirs(adir, exist_ok=True)
         rows_b = [r for r in results if int(r["n_per_mode"]) == b]
         for m in models:

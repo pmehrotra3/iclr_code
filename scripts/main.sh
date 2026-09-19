@@ -2,114 +2,99 @@
 # scripts/main.sh — GPU-parallel sweep, driven ENTIRELY by command-line overrides.
 # conf/ is never modified; everything below is passed to code/main.py as Hydra overrides.
 #
-#   d        : powers of two                  (DIMS)    -> sweep.d, ONE run per d
-#   K        : 2 .. 32 modes                   (KS)      -> sweep.K
-#   R        : mode-sphere radius, SCALES WITH d         -> data.radius = f(d), per d
-#   T        : exact-score (atlas) steps       (TS)      -> process.T_true
-#   T_train  : learned-sampler steps           (TTRAIN)  -> process.T_train (fixed = 150)
-#   anchors  : per-mode anchor budgets         (ANCHORS) -> sweep.anchors
+#   d        : powers of two   (DIMS)    -> sweep.d  (a full list in ONE run; d is a heatmap axis)
+#   K        : 2 .. 32 modes    (KS)      -> sweep.K
+#   R        : mode-sphere radius scales with d IN CODE (train.py: R = data.radius * sqrt(d/2))
+#   T        : exact-score steps (TS)     -> process.T_true
+#   T_train  : learned steps     (TTRAIN) -> process.T_train  (fixed = 150)
+#   anchors  : per-mode budgets  (ANCHORS)-> sweep.anchors
 #
-# Parallelism: one job PER GPU (NGPU jobs at once). A "unit" is one (process, d); it runs its
-# whole T-loop on a single GPU (the learned model depends only on (d,K,R,T_train) -> identical
-# across T_true, so it trains once and reuses across T). Each d gets its own paths.data subtree,
-# so parallel units never collide on checkpoints/manifests. Output: output/<process>/T<T>/d<d>/.
+# One shared timestamp per invocation. Output layout:
+#     output/<timestamp>/<process>/T<T>/{results.json, table.tex, table.png, <model>.png,
+#                                        anchors_<b>/<model>.png}
+#
+# Two phases, so parallel jobs never race on checkpoints:
+#   1) TRAIN     : one job per process (all d,K) -> data/<process>/checkpoints/ (processes differ)
+#   2) EVAL+VIZ  : one job per (process, T), reusing the cached checkpoints, spread across GPUs.
+# One process per GPU; NGPU jobs at a time.
 #
 #   ./scripts/main.sh
-#   NGPU=4 ./scripts/main.sh
 #   DEVICE=cpu NGPU=2 DIMS="2 4" TS="100 500" ANCHORS="[2000,10000]" ./scripts/main.sh
-#
-# NOTE: the two largest budgets (500000, 1000000 anchors PER MODE) are enormous -- with K and d
-# that is tens of millions of points backtracked over up to 1000 steps, likely out of memory.
-# Drop them (or use 50000/100000) unless you are on a big-memory GPU box.
 
 set -o pipefail
+set -f                                   # no globbing, so [2,4,8] overrides stay literal
 cd "$(dirname "$0")/.."
 export ATLAS_ROOT="$PWD"
 
 PROCESSES=${PROCESSES:-"ddim flow"}
-DIMS=${DIMS:-"2 4 8 16 32 64 128 256 512 1024"}                                   # all powers of two
+DIMS=${DIMS:-"2 4 8 16 32 64"}                                   # all powers of two
 KS=${KS:-"[2,4,8,16,32]"}                                        # 2 .. 32 modes
 TS=${TS:-"100 200 300 400 500 1000"}                             # exact-score step counts
-ANCHORS=${ANCHORS:-"[2000,5000,10000,20000,50000,100000]"}     # per-mode budgets
+ANCHORS=${ANCHORS:-"[2000,5000,10000,20000,50000,100000]"}      # per-mode budgets
 TTRAIN=${TTRAIN:-150}                                            # learned-sampler steps
-RADIUS_EXPR=${RADIUS_EXPR:-"sqrt(2*d)"}                          # R(d); awk expr in `d` (d=2 -> 2.0)
+RADBASE=${RADBASE:-2.0}                                          # data.radius base (scaled by sqrt(d/2) in code)
 DEVICE=${DEVICE:-cuda}
-EXTRA=${EXTRA:-}                                                 # any extra overrides, appended verbatim
+EXTRA=${EXTRA:-}                                                 # extra overrides, appended verbatim
 
-# one job per GPU: detect the GPU count, default 4
 if [ -z "${NGPU:-}" ]; then
-  if command -v nvidia-smi >/dev/null 2>&1; then
-    NGPU=$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')
-  fi
+  command -v nvidia-smi >/dev/null 2>&1 && NGPU=$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')
   NGPU=${NGPU:-4}
 fi
 [ "${NGPU:-0}" -ge 1 ] 2>/dev/null || NGPU=1
 
 mkdir -p logs
 STAMP=$(date +%Y-%m-%d_%H-%M-%S)
+DLIST="[$(echo $DIMS | tr ' ' ',')]"                            # "2 4 8" -> "[2,4,8]"
 
-run_unit() {   # $1=gpu $2=process $3=d  -- the whole T-loop for one (process,d) on one GPU
-  local gpu=$1 P=$2 d=$3 R first=1 T FR LOG
-  R=$(awk "BEGIN{d=$d; print $RADIUS_EXPR}")
-  for T in $TS; do
-    FR=false; [ "$first" = 1 ] && FR=true; first=0        # train once per (process,d), reuse across T
-    LOG="logs/${STAMP}_${P}_d${d}_T${T}.log"
-    if ! CUDA_VISIBLE_DEVICES="$gpu" python code/main.py \
-          process="$P" process.T_train="$TTRAIN" process.T_true="$T" \
-          "sweep.d=[$d]" "sweep.K=$KS" "sweep.anchors=$ANCHORS" \
-          "data.radius=$R" "paths.data=${ATLAS_ROOT}/data/d${d}" \
-          "train.force_retrain=$FR" device="$DEVICE" "run_id=T${T}/d${d}" \
-          $EXTRA > "$LOG" 2>&1; then
-      echo "  [FAIL] $P d=$d T=$T  -> $LOG"
-      return 1
-    fi
-    echo "  [ok]   $P d=$d T=$T  (gpu $gpu)"
+# ---- run the commands in JOBS[] ("logname|override args") across NGPU GPUs, one per GPU ----
+run_pool() {
+  local FREE=() RPID=() RGPU=() NP=() NG=() i=0 done_n=0 total=${#JOBS[@]} gpu j pid g log args g0
+  for ((g0=0; g0<NGPU; g0++)); do FREE+=("$g0"); done
+  while [ $done_n -lt $total ]; do
+    while [ ${#FREE[@]} -gt 0 ] && [ $i -lt $total ]; do
+      gpu=${FREE[0]}; FREE=("${FREE[@]:1}")
+      log="${JOBS[$i]%%|*}"; args="${JOBS[$i]#*|}"; i=$((i+1))
+      echo ">>> [gpu $gpu] $log"
+      ( CUDA_VISIBLE_DEVICES="$gpu" python code/main.py $args device="$DEVICE" > "logs/$log" 2>&1 \
+          && echo "  [ok]   $log" || echo "  [FAIL] $log -> logs/$log" ) &
+      RPID+=("$!"); RGPU+=("$gpu")
+    done
+    NP=(); NG=()
+    for j in "${!RPID[@]}"; do
+      pid=${RPID[$j]}; g=${RGPU[$j]}
+      if kill -0 "$pid" 2>/dev/null; then NP+=("$pid"); NG+=("$g")
+      else wait "$pid"; FREE+=("$g"); done_n=$((done_n + 1)); fi
+    done
+    RPID=(); RGPU=()
+    [ ${#NP[@]} -gt 0 ] && { RPID=("${NP[@]}"); RGPU=("${NG[@]}"); }
+    [ $done_n -lt $total ] && sleep 3
   done
 }
 
-# unit list: one (process, d) per entry
-UNITS=()
-for P in $PROCESSES; do for d in $DIMS; do UNITS+=("$P|$d"); done; done
-TOTAL=${#UNITS[@]}
-
 echo "=============================================================="
-echo " GPU-parallel sweep: $NGPU GPU(s), 1 process each, $TOTAL units"
-echo " processes=[$PROCESSES]  d=[$DIMS]  K=$KS"
-echo " T_true=[$TS]  T_train=$TTRAIN  anchors=$ANCHORS  device=$DEVICE  R(d)=$RADIUS_EXPR"
+echo " sweep $STAMP : $NGPU GPU(s), 1 process each"
+echo " processes=[$PROCESSES]  d=$DLIST  K=$KS  T_true=[$TS]  T_train=$TTRAIN"
+echo " anchors=$ANCHORS  radius(base)=$RADBASE (scaled by sqrt(d/2))  device=$DEVICE"
 echo "=============================================================="
 
-FREE=(); for ((g=0; g<NGPU; g++)); do FREE+=("$g"); done       # free GPU ids
-RPID=(); RGPU=()                                                # running jobs (parallel arrays)
-i=0; done_n=0; fail=0
-
-while [ $done_n -lt $TOTAL ]; do
-  # fill every free GPU with the next unit
-  while [ ${#FREE[@]} -gt 0 ] && [ $i -lt $TOTAL ]; do
-    gpu=${FREE[0]}; FREE=("${FREE[@]:1}")
-    P=${UNITS[$i]%|*}; d=${UNITS[$i]#*|}; i=$((i+1))
-    echo ">>> launch  $P  d=$d  on gpu $gpu   ($((i))/$TOTAL)"
-    run_unit "$gpu" "$P" "$d" &
-    RPID+=("$!"); RGPU+=("$gpu")
-  done
-  # reap finished jobs, hand their GPU back to the pool
-  NP=(); NG=()
-  for j in "${!RPID[@]}"; do
-    pid=${RPID[$j]}; g=${RGPU[$j]}
-    if kill -0 "$pid" 2>/dev/null; then
-      NP+=("$pid"); NG+=("$g")
-    else
-      wait "$pid"; rc=$?
-      FREE+=("$g"); done_n=$((done_n + 1))
-      [ $rc -ne 0 ] && fail=$((fail + 1))
-    fi
-  done
-  RPID=(); RGPU=()
-  [ ${#NP[@]} -gt 0 ] && { RPID=("${NP[@]}"); RGPU=("${NG[@]}"); }
-  [ $done_n -lt $TOTAL ] && sleep 3
+# ---- phase 1: train all (d,K) per process ----
+echo "-- phase 1: train --"
+JOBS=()
+for P in $PROCESSES; do
+  JOBS+=("${STAMP}_${P}_train.log|process=$P process.T_train=$TTRAIN sweep.d=$DLIST sweep.K=$KS data.radius=$RADBASE stages=[train] train.force_retrain=true run_id=$STAMP $EXTRA")
 done
+run_pool
+
+# ---- phase 2: evaluate + visualize, one job per (process, T), reusing the checkpoints ----
+echo "-- phase 2: evaluate + visualize --"
+JOBS=()
+for P in $PROCESSES; do
+  for T in $TS; do
+    JOBS+=("${STAMP}_${P}_T${T}.log|process=$P process.T_train=$TTRAIN process.T_true=$T sweep.d=$DLIST sweep.K=$KS sweep.anchors=$ANCHORS data.radius=$RADBASE stages=[evaluate,visualize] train.force_retrain=false run_id=$STAMP $EXTRA")
+  done
+done
+run_pool
 
 echo "=============================================================="
-echo " sweep complete: $TOTAL units, $fail failed"
-echo " results under  output/<process>/T<T>/d<d>/   checkpoints under  data/d<d>/"
+echo " sweep complete -> output/$STAMP/<process>/T<T>/"
 echo "=============================================================="
-[ $fail -eq 0 ]
