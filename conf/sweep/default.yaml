@@ -1,3 +1,5 @@
-d: [2, 4, 8, 16, 32]
+# Step 7 sweep. The improved recipe is validated at d=2 (the trainer needs far more steps to
+# hit hall_target as d grows); add more dims on the command line for the exploratory sweep.
+d: [2]
 K: [2, 4, 8, 16]
-anchors: [2000, 10000, 50000]
+anchors: [20000, 50000, 100000]

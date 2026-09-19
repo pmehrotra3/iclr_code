@@ -58,6 +58,33 @@ def resolve_sweep_dir(base, run_id, sampler, T_true):
 def ckpt_path(data_dir, sampler, d, K):
     return os.path.join(sampler_dir(data_dir, sampler), "checkpoints",
                         f"model_d{d}_K{K}.pt")
+
+
+def gt_cache_path(data_dir, sampler, d, K):
+    """Cached learned-sampler ground-truth fate labels, so evaluate does not recompute the
+    N-seed forward pass once per T_true. Keyed by (sampler, d, K)."""
+    return os.path.join(sampler_dir(data_dir, sampler), "gt_cache", f"d{d}_K{K}.pt")
+
+
+def save_gt_cache(data_dir, sampler, d, K, gt, n_eval, T_train, R99, seed):
+    p = gt_cache_path(data_dir, sampler, d, K)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    torch.save({"gt": gt.detach().cpu(), "n_eval": int(n_eval), "seed": int(seed),
+                "T_train": int(T_train), "R99": float(R99)}, p)
+
+
+def load_gt_cache(data_dir, sampler, d, K, n_eval, seed, device):
+    """Return cached gt labels (on `device`) when present and matching (n_eval, seed), else None."""
+    p = gt_cache_path(data_dir, sampler, d, K)
+    if not os.path.exists(p):
+        return None
+    try:
+        blob = torch.load(p, map_location=device)
+    except Exception:
+        return None
+    if int(blob.get("n_eval", -1)) != int(n_eval) or int(blob.get("seed", -999)) != int(seed):
+        return None
+    return blob["gt"].to(device)
  
  
 class ModePlacementError(RuntimeError):
@@ -128,7 +155,17 @@ def train_one(cfg, d, K, device):
  
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(ckpt, path)
- 
+
+    # Cache the learned-sampler ground truth now (once), so every downstream (evaluate, T_true)
+    # job loads it instead of re-running the N-seed forward pass. Same seeds evaluate will use.
+    try:
+        n_eval = int(cfg.eval.n_eval)
+        X_te = proc.seeds(n_eval, d, cfg.seed + 1)
+        gt = core.label_fate(proc.sample(model, X_te), means_t, R99)
+        save_gt_cache(cfg.paths.data, sampler, d, K, gt, n_eval, T, R99, cfg.seed)
+    except Exception as e:
+        print(f"[train:{sampler}] gt cache skipped d={d} K={K}: {e}")
+
     return {"d": d, "K": K, "path": path,
             "status": "trained" if converged else "not_converged",
             "hall_rate": hall, "converged": converged,

@@ -17,16 +17,20 @@ data:
 
 train:
   force_retrain: false
-  base_steps: 3000
+  base_steps: 30000       # steps = base_steps * (1 + d/16) * (1 + K/16)  (Step 1 recipe)
   lr: 0.001
+  lr_min: 1.0e-5          # cosine-decay the lr from `lr` to this over the run (null = off)
+  grad_clip: 1.0          # clip the gradient norm to this each step (null = off)
+  ema_decay: 0.999        # EMA of the weights, loaded in at the end (null = off)
+  ema_warmup: 1000        # warm-up steps over which the EMA decay ramps up to ema_decay
   batch: 512
   probe_n: 10000
-  hall_target: 0.03
+  hall_target: 0.015      # retry until probe hall <= this (1% construction floor + 0.5%)
   step_growth: 1.7
-  max_attempts: 6
+  max_attempts: 4
 
 eval:
-  n_eval: 20000
+  n_eval: 200000          # fresh seeds for the ground truth; large so ~1-2% hall metrics are stable
 
 # anchors planted in data space, then backtracked to seed space with the exact field
 anchors:

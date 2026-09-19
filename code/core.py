@@ -140,24 +140,76 @@ class ScoreNet(nn.Module):
 
 
 # --------------------------------------------------------------------------------------
+# optimisation helper: Adam + cosine lr decay + grad-norm clip + EMA weights
+#
+# The three additions from the improved recipe (Step 1) live here so every process shares
+# them: the learned DDIM score and the flow velocity both call run_optimizer with their own
+# per-step loss closure. Cosine-decays lr from `lr` to `lr_min`, clips the gradient norm to
+# `grad_clip`, and keeps an exponential moving average of the weights (decay `ema_decay`,
+# warmed up over `ema_warmup` steps) that REPLACES the raw weights at the end. Any of the
+# three is disabled by passing None / 0, which recovers the old plain-Adam loop.
+# --------------------------------------------------------------------------------------
+def _ema_decay(step: int, decay: float, warmup: int) -> float:
+    """EMA decay with a warm-up ramp: rises from ~0 to `decay` over the first `warmup` steps."""
+    if warmup and step < warmup:
+        return min(decay, (1.0 + step) / (1.0 + warmup))
+    return decay
+
+
+def run_optimizer(model, loss_closure, n_steps, lr=1e-3, lr_min=None, grad_clip=None,
+                  ema_decay=None, ema_warmup=0):
+    """Optimise `model` for `n_steps` steps; loss_closure() returns the scalar loss each step.
+
+    Returns the model with EMA weights loaded (when ema_decay is set)."""
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    sched = None
+    if lr_min is not None and n_steps > 1:
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=n_steps, eta_min=lr_min)
+    ema = None
+    if ema_decay:
+        ema = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    for step in range(n_steps):
+        loss = loss_closure()
+        opt.zero_grad(); loss.backward()
+        if grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        opt.step()
+        if sched is not None:
+            sched.step()
+        if ema is not None:
+            dcy = _ema_decay(step, ema_decay, ema_warmup)
+            msd = model.state_dict()
+            with torch.no_grad():
+                for k, v in ema.items():
+                    if v.dtype.is_floating_point:
+                        v.mul_(dcy).add_(msd[k].detach(), alpha=1 - dcy)
+                    else:
+                        v.copy_(msd[k])
+    if ema is not None:
+        model.load_state_dict(ema)
+    return model
+
+
+# --------------------------------------------------------------------------------------
 # learned model: train + sample
 # --------------------------------------------------------------------------------------
 def train_learned(means_t, d, K, abar, T, variance, n_steps,
-                  lr=1e-3, batch=512, seed=0, device=None):
+                  lr=1e-3, batch=512, seed=0, device=None,
+                  lr_min=None, grad_clip=None, ema_decay=None, ema_warmup=0):
     torch.manual_seed(seed)
     sa = torch.sqrt(abar); soma = torch.sqrt(1 - abar)
     m = ScoreNet(d).to(device)
-    opt = torch.optim.Adam(m.parameters(), lr=lr)
     sigma = math.sqrt(variance)
-    for _ in range(n_steps):
+
+    def step():
         k = torch.randint(0, K, (batch,), device=device)
         x0 = means_t[k] + sigma * torch.randn(batch, d, device=device)
         ti = torch.randint(0, T, (batch,), device=device)
         noise = torch.randn_like(x0)
         xt = sa[ti][:, None] * x0 + soma[ti][:, None] * noise
-        loss = ((m(xt, ti) - noise) ** 2).mean()
-        opt.zero_grad(); loss.backward(); opt.step()
-    return m
+        return ((m(xt, ti) - noise) ** 2).mean()
+
+    return run_optimizer(m, step, n_steps, lr, lr_min, grad_clip, ema_decay, ema_warmup)
 
 
 @torch.no_grad()
@@ -210,37 +262,58 @@ def true_score(X, Mt, v):
     return (w @ Mt - X) / v
 
 
+# --- exact-score DDIM building blocks (shared by the Euler and Heun integrators) ---
 @torch.no_grad()
-def backtrack_true(Xd, means_t, abar_t, T, variance, chunk=50000):
+def _exact_eps(x, means_t, ab, variance):
+    """Closed-form eps-prediction of the exact GMM score at signal level `ab`."""
+    v = ab * variance + (1 - ab)
+    sc = true_score(x, torch.sqrt(ab) * means_t, v)
+    return -torch.sqrt(1 - ab) * sc
+
+
+@torch.no_grad()
+def _ddim_step(x, eps, ab, abp):
+    """One deterministic DDIM update from signal level `ab` to `abp`, given eps."""
+    x0 = (x - torch.sqrt(1 - ab) * eps) / torch.sqrt(ab)
+    return torch.sqrt(abp) * x0 + torch.sqrt(1 - abp) * eps
+
+
+@torch.no_grad()
+def _ddim_transport(Xd, means_t, abar_t, order, levels, variance, chunk=50000):
+    """Integrate the exact-score DDIM map along the sequence of (ab, abp) `levels`.
+
+    order='euler': one exact-eps evaluation per step (first order).
+    order='heun' : predictor-corrector -- eps1 at x, predict x~ = DDIM(x, eps1), eps2 at x~
+                   (at the TARGET level), then x' = DDIM(x, (eps1+eps2)/2). Second order,
+                   and (data -> seed -> data) round-trips to L exactly at the same T.
+    """
+    heun = str(order).lower() == "heun"
     X = Xd.clone()
-    for i in range(1, T):
-        ab, abp = abar_t[i - 1], abar_t[i]
-        v = ab * variance + (1 - ab)
+    for ab, abp in levels:
         for s in range(0, X.shape[0], chunk):
             xs = X[s:s + chunk]
-            sc = true_score(xs, torch.sqrt(ab) * means_t, v)
-            x0 = (xs + (1 - ab) * sc) / torch.sqrt(ab)
-            eps = -torch.sqrt(1 - ab) * sc
-            X[s:s + chunk] = torch.sqrt(abp) * x0 + torch.sqrt(1 - abp) * eps
+            eps1 = _exact_eps(xs, means_t, ab, variance)
+            if heun:
+                xtil = _ddim_step(xs, eps1, ab, abp)
+                eps2 = _exact_eps(xtil, means_t, abp, variance)
+                eps1 = 0.5 * (eps1 + eps2)
+            X[s:s + chunk] = _ddim_step(xs, eps1, ab, abp)
     return X
 
 
 @torch.no_grad()
-def forward_true(X0, means_t, abar_t, T, variance, chunk=50000):
-    """Exact-score DDIM FORWARD: seeds (noise) -> data. The inverse of backtrack_true,
-    driven by the closed-form GMM score instead of a network. Used to label seeds by the
-    exact score (the analytic reference), e.g. altered_knn's calibration set."""
-    X = X0.clone()
-    for i in reversed(range(1, T)):
-        ab, abp = abar_t[i], abar_t[i - 1]
-        v = ab * variance + (1 - ab)
-        for s in range(0, X.shape[0], chunk):
-            xs = X[s:s + chunk]
-            sc = true_score(xs, torch.sqrt(ab) * means_t, v)
-            eps = -torch.sqrt(1 - ab) * sc
-            x0 = (xs - torch.sqrt(1 - ab) * eps) / torch.sqrt(ab)
-            X[s:s + chunk] = torch.sqrt(abp) * x0 + torch.sqrt(1 - abp) * eps
-    return X
+def backtrack_true(Xd, means_t, abar_t, T, variance, chunk=50000, order="heun"):
+    """Data -> seed (noise) under the exact GMM score. `order` in {euler, heun}."""
+    levels = [(abar_t[i - 1], abar_t[i]) for i in range(1, T)]
+    return _ddim_transport(Xd, means_t, abar_t, order, levels, variance, chunk)
+
+
+@torch.no_grad()
+def forward_true(X0, means_t, abar_t, T, variance, chunk=50000, order="heun"):
+    """Seeds (noise) -> data under the exact GMM score, the inverse of backtrack_true. Used to
+    label seeds by the exact score (the analytic reference), e.g. altered_knn's calibration set."""
+    levels = [(abar_t[i], abar_t[i - 1]) for i in reversed(range(1, T))]
+    return _ddim_transport(X0, means_t, abar_t, order, levels, variance, chunk)
 
 
 # --------------------------------------------------------------------------------------

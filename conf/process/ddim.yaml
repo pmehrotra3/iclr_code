@@ -1,5 +1,6 @@
 name: ddim
-T_train: 1000
-T_true: 1000
+T_train: 150
+T_true: 200
 beta_min: 1e-4
 beta_max: 0.02
+true_order: heun   # exact-score backtrack integrator: heun (2nd order) | euler (1st order)

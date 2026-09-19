@@ -20,6 +20,14 @@ import core
 from processes.base import Process
 
 
+def _get(cfg, key, default):
+    """Read `key` from an OmegaConf/attr config, tolerating None/missing (returns default)."""
+    if cfg is None:
+        return default
+    v = getattr(cfg, key, default)
+    return default if v is None else v
+
+
 class FlowOTProcess(Process):
     name = "flow"
 
@@ -39,10 +47,10 @@ class FlowOTProcess(Process):
     def train_model(self, K, d, n_steps, lr, batch, seed):
         torch.manual_seed(seed)
         model = self.build_model(d)
-        opt = torch.optim.Adam(model.parameters(), lr=lr)
         sigma0 = self.variance ** 0.5
         oms = 1.0 - self.sigma_min
-        for _ in range(n_steps):
+
+        def step():
             k = torch.randint(0, K, (batch,), device=self.device)
             x1 = self.means_t[k] + sigma0 * torch.randn(batch, d, device=self.device)
             x0 = torch.randn(batch, d, device=self.device)
@@ -50,9 +58,15 @@ class FlowOTProcess(Process):
             psi = (1 - oms * t)[:, None] * x0 + t[:, None] * x1            # Eq. 22
             target = x1 - oms * x0                                         # Eq. 23
             ti = (t * (self.T - 1)).round().long().clamp(0, self.T - 1)    # embedding index
-            loss = ((model(psi, ti) - target) ** 2).mean()
-            opt.zero_grad(); loss.backward(); opt.step()
-        return model
+            return ((model(psi, ti) - target) ** 2).mean()
+
+        # same cosine-decay + grad-clip + EMA recipe as the DDIM score (Step 1)
+        t = getattr(self.cfg, "train", None)
+        return core.run_optimizer(
+            model, step, n_steps, lr,
+            lr_min=_get(t, "lr_min", None), grad_clip=_get(t, "grad_clip", None),
+            ema_decay=_get(t, "ema_decay", None), ema_warmup=int(_get(t, "ema_warmup", 0) or 0),
+        )
 
     # ---- ODE solvers ----
     def _step(self, f, x, t, dt, solver=None):

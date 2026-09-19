@@ -99,6 +99,38 @@ Or just edit `conf/config.yaml`.
   `anchors_<n>/` per budget holding `atlas.png`, `table.tex` and `table.png`. Reads only
   `results.json`, so you can restyle without recomputing.
 
+## Improved recipe (the accuracy fixes)
+
+The defaults now follow the tuned recipe. Four changes lift the numbers over the earlier run:
+
+1. **Trainer (biggest gain).** `core.train_learned` / the flow trainer now cosine-decay the lr
+   (`train.lr` → `train.lr_min`), clip the gradient norm (`train.grad_clip`), and keep an EMA of
+   the weights (`train.ema_decay`, warmed up over `train.ema_warmup`) that replaces the raw weights
+   at the end. `train.base_steps` is 30 000 and `train.hall_target` is 0.015. This is what fixes the
+   broken high-`d` DDIM ground truth (probe hall was reaching 0.2–0.9). Disable any piece by setting
+   it `null`.
+2. **Second-order exact-field backtrack.** `core.backtrack_true`/`forward_true` take a Heun
+   predictor–corrector step (`process.true_order=heun` for DDIM, `process.true_solver=heun` for
+   flow). Data → seed → data now round-trips to the label exactly (verified: label-match 1.0000).
+3. **Prior calibration.** Every parametric predictor also emits a `<name>_cal` row: its
+   hallucination logit is shifted so it calls exactly the exact-score hallucination fraction
+   (5 000 calibration seeds).
+4. **Stable, cached ground truth.** `eval.n_eval` is 200 000 (stable ~1–2 % hallucination metrics),
+   and the ground-truth labels are cached at train time under `data/<sampler>/gt_cache/`, so a whole
+   `T_true` sweep runs the N-seed forward pass at most once per `(d, K)`. Delete `gt_cache/` to force
+   a recompute.
+
+### Fast, full-GPU sweep
+
+`scripts/main.sh` saturates every GPU: phase 1 launches **one training job per `(process, d, K)`
+cell** (distinct checkpoint files, so no races), phase 2 one eval+viz job per `(process, T)`.
+
+```bash
+./scripts/main.sh                                  # opt recipe: d=2, K∈{2,4,8,16}, T∈{100,200,500}
+DIMS="2 4 8 16" ./scripts/main.sh                  # wider dimension sweep
+DEVICE=cpu NGPU=2 DIMS="2" KS="2" TS="200" ANCHORS="[2000]" ./scripts/main.sh   # tiny CPU smoke
+```
+
 ## Notes
 
 - `R99` is derived from the chi-square quantile `mass_q` and carries the `sqrt(d)`

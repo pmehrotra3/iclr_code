@@ -6,8 +6,8 @@ Per (d, K) cell, per anchor budget:
      band; core.altered_knn_anchors: mode-only weighted rings). No model involved.
   2. Backtrack them to SEED space with the exact analytic field (proc.true_field_backtrack).
   3. Fit each predictor in classifier.models on the (seed, label) pairs -- knn, altered_knn,
-     polar3. altered_knn's confidence cut is calibrated on fresh seeds labelled by the exact
-     score (proc.label(None, ...)).
+     quadratic, polar8. altered_knn's confidence cut is calibrated on fresh seeds labelled by the
+     exact score (proc.label(None, ...)); each parametric model also gets a <name>_cal variant.
   4. Ground truth: eval.n_eval fresh seeds pushed through the LEARNED sampler, labelled with L.
   5. Score every predictor against that ground truth (fate.fate_metrics).
 
@@ -24,7 +24,7 @@ from omegaconf import OmegaConf
 import core
 import fate
 from processes.factory import make_process
-from train import ckpt_path, sweep_dir
+from train import ckpt_path, sweep_dir, load_gt_cache, save_gt_cache
 
 
 def load_ckpt(path, device):
@@ -67,8 +67,14 @@ def eval_one(cfg, d, K, device):
     proc_true = make_process(sampler, means_t, variance, int(cfg.process.T_true), device, cfg)
 
     # ---- ground truth: where the LEARNED model actually sends each eval seed ----
-    X_te = proc.seeds(cfg.eval.n_eval, d, cfg.seed + 1)
-    gt = core.label_fate(proc.sample(model, X_te), means_t, R99)
+    # Reuse the cache written by train (identical for every T_true); recompute + write through
+    # only on a miss, so a full T sweep runs the N-seed forward pass at most once per (d, K).
+    n_eval = int(cfg.eval.n_eval)
+    X_te = proc.seeds(n_eval, d, cfg.seed + 1)
+    gt = load_gt_cache(cfg.paths.data, sampler, d, K, n_eval, cfg.seed, device)
+    if gt is None:
+        gt = core.label_fate(proc.sample(model, X_te), means_t, R99)
+        save_gt_cache(cfg.paths.data, sampler, d, K, gt, n_eval, T, R99, cfg.seed)
     del model
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -78,9 +84,11 @@ def eval_one(cfg, d, K, device):
     specs = [_spec(cfg, m) for m in cfg.classifier.models]
     need_altered = any(s["arch"] == "altered_knn" for s in specs)
 
-    # seeds labelled by the EXACT score at T_true: altered_knn's calibration set
+    # seeds labelled by the EXACT score at T_true: altered_knn's calibration set AND the
+    # prior-calibration target for the parametric models (Step 4).
     X_cal = proc.seeds(int(a.n_calibrate), d, cfg.seed + 2)
     y_cal = proc_true.label(None, X_cal, R99)
+    cal_rate = float((y_cal == -1).float().mean())      # exact-score hallucination fraction
 
     rows = []
     for b in budgets(cfg):
@@ -110,6 +118,16 @@ def eval_one(cfg, d, K, device):
                          "model": spec["name"], "arch": spec["arch"],
                          "hall_gt": hall_gt, "n_mode": int(m_mode.sum()), "n_hall": int(m_hall.sum()),
                          "secs": round(time.time() - t0, 1), **met})
+
+            # Step 4 -- prior calibration: shift the hallucination logit so the parametric model
+            # calls exactly the exact-score hallucination fraction; reported as <name>_cal.
+            if spec["arch"] in fate.PARAMETRIC:
+                bias = fate.hall_bias_for_rate(nets, X_cal, cal_rate)
+                met_c = fate.fate_metrics(fate.predict_fate(nets, X_te, hall_bias=bias), gt)
+                rows.append({"d": d, "K": K, "n_per_mode": int(b), "n_anchors": n_anchors,
+                             "model": spec["name"] + "_cal", "arch": spec["arch"],
+                             "hall_gt": hall_gt, "n_mode": int(m_mode.sum()), "n_hall": int(m_hall.sum()),
+                             "secs": round(time.time() - t0, 1), **met_c})
 
     return rows
 

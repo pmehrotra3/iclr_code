@@ -14,6 +14,14 @@ import core
 from processes.base import Process
 
 
+def _get(cfg, key, default):
+    """Read `key` from an OmegaConf/attr config, tolerating None/missing (returns default)."""
+    if cfg is None:
+        return default
+    v = getattr(cfg, key, default)
+    return default if v is None else v
+
+
 class DDIMProcess(Process):
     name = "ddim"
 
@@ -23,14 +31,19 @@ class DDIMProcess(Process):
         beta_min = float(getattr(proc, "beta_min", 1e-4)) if proc is not None else 1e-4
         beta_max = float(getattr(proc, "beta_max", 0.02)) if proc is not None else 0.02
         self.abar = core.make_schedule(T, beta_min, beta_max, device=device)
+        # second-order (Heun) exact-score backtrack by default; 'euler' recovers first order.
+        self.true_order = str(getattr(proc, "true_order", "heun")) if proc is not None else "heun"
 
     def build_model(self, d):
         return core.ScoreNet(d).to(self.device)
 
     def train_model(self, K, d, n_steps, lr, batch, seed):
+        t = getattr(self.cfg, "train", None)
         return core.train_learned(
             self.means_t, d, K, self.abar, self.T, self.variance,
             n_steps=n_steps, lr=lr, batch=batch, seed=seed, device=self.device,
+            lr_min=_get(t, "lr_min", None), grad_clip=_get(t, "grad_clip", None),
+            ema_decay=_get(t, "ema_decay", None), ema_warmup=int(_get(t, "ema_warmup", 0) or 0),
         )
 
     @torch.no_grad()
@@ -49,14 +62,14 @@ class DDIMProcess(Process):
 
     @torch.no_grad()
     def true_field_backtrack(self, Pd, chunk=50000):
-        # reuse the shared true-score backtrack (data -> noise)
+        # reuse the shared true-score backtrack (data -> noise), Heun 2nd-order by default
         return core.backtrack_true(
-            Pd, self.means_t, self.abar, self.T, self.variance, chunk=chunk
+            Pd, self.means_t, self.abar, self.T, self.variance, chunk=chunk, order=self.true_order
         )
 
     @torch.no_grad()
     def true_field_forward(self, X0, chunk=50000):
         # exact-score DDIM forward (noise -> data), inverse of true_field_backtrack
         return core.forward_true(
-            X0, self.means_t, self.abar, self.T, self.variance, chunk=chunk
+            X0, self.means_t, self.abar, self.T, self.variance, chunk=chunk, order=self.true_order
         )
