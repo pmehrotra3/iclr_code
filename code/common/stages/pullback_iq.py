@@ -60,12 +60,20 @@ def ckpt_process(cfg):
     return str(cfg.pullback.ckpt_process or cfg.process)
 
 
+def viz_root(cfg):
+    """paths.viz, under whatever name the current config gives it."""
+    for k in ("viz", "visualization", "figures", "figs"):
+        if k in cfg.paths:
+            return cfg.paths[k]
+    return os.path.join(cfg.paths.root, "visualization")
+
+
 def out_dir(cfg):
     return os.path.join(cfg.paths.output, cfg.run_tag, cfg.process, "pullback")
 
 
 def viz_dir(cfg):
-    return os.path.join(cfg.paths.viz, cfg.run_tag, cfg.process, "pullback")
+    return os.path.join(viz_root(cfg), cfg.run_tag, cfg.process, "pullback")
 
 
 # ------------------------------------------------------------------ fields
@@ -585,7 +593,7 @@ def _manual_fig(D, J, path):
     plt.close(fig)
 
 
-def _anim(D, J, path, fps=25, hold=20, max_frames=120, dpi=110):
+def _anim(D, J, path, fps=25, hold=20, intro=20, max_frames=120, dpi=110):
     """d = 2: the three trajectories drawing themselves, with the distance panel filling in."""
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -602,6 +610,7 @@ def _anim(D, J, path, fps=25, hold=20, max_frames=120, dpi=110):
     pale = ["#fde0dd", "#deebf7", "#e5f5e0", "#fff7bc", "#efedf5", "#fee6ce", "#e0f3f8",
             "#f2f0f7", "#fbb4ae", "#b3cde3", "#ccebc5", "#decbe4", "#fed9a6", "#ffffcc",
             "#e5d8bd", "#fddaec"]
+    cols_pre = {"T_og": C_OG, "T_iq": C_IQ, "T_ours": C_US}
     fig, ax = plt.subplots(1, 2, figsize=(12.5, 5.4))
 
     pts = np.concatenate(list(Tr.values()) + [MU])
@@ -622,6 +631,22 @@ def _anim(D, J, path, fps=25, hold=20, max_frames=120, dpi=110):
     ax[0].plot(*Tr["T_og"][0], "X", color="k", ms=11, zorder=5)
     ax[0].set_xlim(c[0] - w, c[0] + w); ax[0].set_ylim(c[1] - w, c[1] + w)
     ax[0].set_aspect("equal"); ax[0].set_xlabel("$x_1$"); ax[0].set_ylabel("$x_2$")
+
+    # inset: the pullback step itself, which is far too small to see at the panel scale
+    zh, zo, nn = D["zh"][j], D["z_ours"][j], D["nrm"][j]
+    eps = float(np.linalg.norm(zo - zh))
+    wi = max(2.2 * eps, 1e-6)
+    ins = ax[0].inset_axes([0.02, 0.63, 0.33, 0.35])
+    ins.set_xlim(zh[0] - wi, zh[0] + wi); ins.set_ylim(zh[1] - wi, zh[1] + wi)
+    ins.set_aspect("equal"); ins.set_xticks([]); ins.set_yticks([])
+    ins.set_facecolor("white")
+    ins.annotate("", xy=zh - 0.8 * wi * nn, xytext=zh,
+                 arrowprops=dict(arrowstyle="->", color="k", lw=1.6))
+    ins.text(0.05, 0.05, rf"$-n$,  $\epsilon^*$={eps:.3g}", transform=ins.transAxes, fontsize=8)
+    ins.plot(*zh, "X", color="k", ms=9)
+    ins.plot(*zo, "o", color=C_US, ms=7, mec="k")
+    ins.set_title("pullback step at $x_T$", fontsize=8)
+    ins_l = {k: ins.plot([], [], color=cols_pre[k], lw=1.4)[0] for k in ("T_og", "T_iq", "T_ours")}
 
     names = {"T_og": "original (hallucinates)", "T_iq": "IQ", "T_ours": "ours"}
     cols = {"T_og": C_OG, "T_iq": C_IQ, "T_ours": C_US}
@@ -648,18 +673,25 @@ def _anim(D, J, path, fps=25, hold=20, max_frames=120, dpi=110):
            else np.arange(n))
 
     def frame(f):
-        i = int(idx[min(f, len(idx) - 1)])
+        if f < intro:                                        # hold on the pullback step
+            i = 0
+            title.set_text(f"d={J['d']}, K={J['K']}:  pullback step  "
+                           rf"$z_{{ours}} = z_h - \epsilon^* n$,  $\epsilon^*$ = {eps:.3g}")
+        else:
+            i = int(idx[min(f - intro, len(idx) - 1)])
+            title.set_text(f"d={J['d']}, K={J['K']}:  reverse step {i}/{n-1}   (t = {t[i]:.3f})")
         for k in Tr:
             lines[k].set_data(Tr[k][: i + 1, 0], Tr[k][: i + 1, 1])
+            ins_l[k].set_data(Tr[k][: i + 1, 0], Tr[k][: i + 1, 1])
             dots[k].set_data([Tr[k][i, 0]], [Tr[k][i, 1]])
         for k in dl:
             dl[k].set_data(t[: i + 1], D[k][: i + 1, j])
         now.set_xdata([t[i], t[i]])
-        title.set_text(f"d={J['d']}, K={J['K']}:  reverse step {i}/{n-1}   (t = {t[i]:.3f})")
-        return list(lines.values()) + list(dots.values()) + list(dl.values()) + [now, title]
+        return (list(lines.values()) + list(dots.values()) + list(ins_l.values())
+                + list(dl.values()) + [now, title])
 
     fig.tight_layout()
-    an = FuncAnimation(fig, frame, frames=len(idx) + hold, interval=1000 / fps, blit=False)
+    an = FuncAnimation(fig, frame, frames=intro + len(idx) + hold, interval=1000 / fps, blit=False)
     if shutil.which("ffmpeg"):
         an.save(f"{path}_anim.mp4", writer=FFMpegWriter(fps=fps, bitrate=2400), dpi=dpi)
     an.save(f"{path}_anim.gif", writer=PillowWriter(fps=fps), dpi=dpi)
@@ -687,3 +719,180 @@ def viz(cfg):
                     made.append(a_)
     print(f"[pullback_viz] wrote {len(made)} figures under {viz_dir(cfg)}")
     return {"figures": made}
+
+
+# ==================================================================================== #
+#  stage: pullback_sweep — does the Prop. 4 repair scale over the (d, K) grid?          #
+# ==================================================================================== #
+"""For every cell of psweep.d x psweep.K, on the sweep.T_train checkpoint:
+
+  1. draw psweep.n_eval seeds and run the learned sampler to x_0: base hallucination rate.
+  2. for every hallucinating seed, target the nearest mode and compute the pulled-back
+     normal n = J^T nu / ||J^T nu|| (one VJP through the whole sampler).
+  3. move each such seed by a FIXED eps along -n (no per-seed search, so the rule is the
+     same for every seed and nothing is tuned on the outcome), re-run, and recount. The
+     same eps along a random direction is the control.
+  4. report, per eps: the repaired hallucination rate, the fraction of hallucinations
+     fixed, the random-direction control, and per-mode coverage so a drop that comes from
+     collapsing modes is visible.
+
+Only the hallucinating seeds are touched, so the rate can only fall; the quantity of
+interest is how much of it the normal removes, and how that compares with the control and
+with the eps needed. Results: output/<run_tag>/<process>/pullback_sweep/.
+"""
+
+
+def sweep_dir(cfg):
+    return os.path.join(cfg.paths.output, cfg.run_tag, cfg.process, "pullback_sweep")
+
+
+def sweep_one(cfg, d, K, device):
+    pc = cfg.psweep
+    pname = str(pc.ckpt_process or cfg.process)
+    path = utils.ckpt_path(cfg.paths.checkpoints, pname, d, K, int(cfg.sweep.T_train))
+    if not os.path.exists(path):
+        print(f"[pullback_sweep] d={d} K={K}: no checkpoint at {path}, skipped")
+        return None
+    model, ck = checkpoint.load(path, device)
+    for prm in model.parameters():
+        prm.requires_grad_(False)
+    means_t, R99 = ck["means"], float(ck["R99"])
+    proc = make_process(pname, means_t, ck["variance"], ck["T"], device, cfg)
+    S = Sampler(proc, Field(proc, model, str(pc.field)))
+    t0 = time.time()
+
+    Z = proc.seeds(int(pc.n_eval), d, int(pc.seed) + 17)
+    X0 = S.G(Z)
+    lab0 = gmm.label_fate(X0, means_t, R99)
+    hall = lab0 < 0
+    n_h = int(hall.sum())
+    N = int(pc.n_eval)
+    row = {"d": d, "K": K, "T": int(ck["T"]), "n_eval": N, "R99": R99,
+           "base_hall_rate": n_h / N, "n_hall": n_h}
+    if n_h == 0:
+        print(f"[pullback_sweep] d={d:>2} K={K:>2}: no hallucinations in {N} seeds")
+        return row
+    zh = Z[hall]
+    tgt = torch.cdist(X0[hall], means_t).argmin(1)
+    mu_t = means_t[tgt]
+
+    nrm = torch.cat([pulled_normal(S, c, S.T - 1, m)[0]      # one VJP per chunk
+                     for c, m in zip(zh.split(int(pc.chunk)), mu_t.split(int(pc.chunk)))])
+    g = torch.Generator(device=device).manual_seed(int(pc.seed) + 3)
+    u = torch.randn(n_h, d, generator=g, device=device)
+    u = u / u.norm(dim=1, keepdim=True)
+
+    def rate(z_new):
+        lab = torch.cat([gmm.label_fate(S.G(c), means_t, R99) for c in z_new.split(int(pc.chunk))])
+        cov = torch.bincount(lab[lab >= 0], minlength=K).float()
+        return lab, cov
+
+    base_cov = torch.bincount(lab0[lab0 >= 0], minlength=K).float()
+    curves = []
+    for eps in [float(e) for e in pc.eps_grid]:
+        lab_n, _ = rate(zh - eps * nrm)
+        lab_r, _ = rate(zh + eps * u)
+        fixed = int((lab_n >= 0).sum())
+        cov = base_cov.clone()
+        cov += torch.bincount(lab_n[lab_n >= 0], minlength=K).float()
+        p = cov / cov.sum()
+        curves.append({
+            "eps": eps,
+            "hall_rate_ours": (n_h - fixed) / N,
+            "frac_fixed_ours": fixed / n_h,
+            "hall_rate_rand": (n_h - int((lab_r >= 0).sum())) / N,
+            "frac_fixed_rand": int((lab_r >= 0).sum()) / n_h,
+            "min_mode_share": float(p.min()), "max_mode_share": float(p.max()),
+        })
+    best = min(curves, key=lambda c_: c_["hall_rate_ours"])
+    row.update({"curves": curves, "best_eps": best["eps"],
+                "hall_rate_after": best["hall_rate_ours"],
+                "frac_fixed": best["frac_fixed_ours"],
+                "hall_rate_rand": best["hall_rate_rand"],
+                "frac_fixed_rand": best["frac_fixed_rand"],
+                "min_mode_share": best["min_mode_share"],
+                "uniform_share": 1.0 / K,
+                "secs": round(time.time() - t0, 1)})
+    print(f"[pullback_sweep] d={d:>2} K={K:>2} T={int(ck['T'])}: "
+          f"HR {100*row['base_hall_rate']:.2f}% -> {100*row['hall_rate_after']:.2f}% "
+          f"(fixed {100*row['frac_fixed']:.0f}% at eps={best['eps']:.3g}; "
+          f"random dir fixes {100*row['frac_fixed_rand']:.0f}%)  [{row['secs']}s]", flush=True)
+    return row
+
+
+SWEEP_KEYS = ["d", "K", "T", "n_eval", "n_hall", "base_hall_rate", "hall_rate_after",
+              "frac_fixed", "best_eps", "hall_rate_rand", "frac_fixed_rand",
+              "min_mode_share", "uniform_share", "secs"]
+
+
+def run_sweep(cfg):
+    device = utils.get_device(cfg.device)
+    rows = []
+    for d in cfg.psweep.d:
+        for K in cfg.psweep.K:
+            r = sweep_one(cfg, int(d), int(K), device)
+            if r and r.get("n_hall"):
+                rows.append(r)
+    os.makedirs(sweep_dir(cfg), exist_ok=True)
+    with open(os.path.join(sweep_dir(cfg), "curves.json"), "w") as f:
+        json.dump(rows, f, indent=2)
+    path = os.path.join(sweep_dir(cfg), "summary.csv")
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(SWEEP_KEYS)
+        for r in rows:
+            w.writerow([r.get(k) for k in SWEEP_KEYS])
+    print(f"[pullback_sweep] wrote {path}")
+    return {"summary": path, "n_cells": len(rows)}
+
+
+def sweep_viz(cfg):
+    import matplotlib; matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    rows = json.load(open(os.path.join(sweep_dir(cfg), "curves.json")))
+    if not rows:
+        print("[pullback_sweep_viz] nothing to plot")
+        return {}
+    out = os.path.join(viz_root(cfg), cfg.run_tag, cfg.process, "pullback_sweep")
+    os.makedirs(out, exist_ok=True)
+    ds = sorted({r["d"] for r in rows})
+    Ks = sorted({r["K"] for r in rows})
+    get = {(r["d"], r["K"]): r for r in rows}
+
+    fig, ax = plt.subplots(1, 3, figsize=(16, 4.6))
+    for K in Ks:
+        xs = [d for d in ds if (d, K) in get]
+        ax[0].plot(xs, [100 * get[(d, K)]["base_hall_rate"] for d in xs], "o--", color=f"C{Ks.index(K)}",
+                   alpha=0.5, label=f"K={K} before")
+        ax[0].plot(xs, [100 * get[(d, K)]["hall_rate_after"] for d in xs], "o-", color=f"C{Ks.index(K)}",
+                   label=f"K={K} after")
+    ax[0].set_xscale("log", base=2); ax[0].set_xlabel("d"); ax[0].set_ylabel("hallucination rate (%)")
+    ax[0].set_title("Before (dashed) and after the pullback repair (solid)", fontsize=10)
+    ax[0].legend(fontsize=7, ncol=2)
+
+    for K in Ks:
+        xs = [d for d in ds if (d, K) in get]
+        ax[1].plot(xs, [100 * get[(d, K)]["frac_fixed"] for d in xs], "o-", color=f"C{Ks.index(K)}",
+                   label=f"K={K} ours")
+        ax[1].plot(xs, [100 * get[(d, K)]["frac_fixed_rand"] for d in xs], "s:", color=f"C{Ks.index(K)}",
+                   alpha=0.5, label=f"K={K} random")
+    ax[1].set_xscale("log", base=2); ax[1].set_xlabel("d")
+    ax[1].set_ylabel("hallucinations repaired (%)"); ax[1].set_ylim(0, 100)
+    ax[1].set_title("Repaired by a fixed step along $-n$ vs a random direction", fontsize=10)
+    ax[1].legend(fontsize=7, ncol=2)
+
+    for r in rows:
+        e = [c["eps"] for c in r["curves"]]
+        ax[2].plot(e, [100 * c["frac_fixed_ours"] for c in r["curves"]], "-", lw=1,
+                   alpha=0.8, label=f"d={r['d']},K={r['K']}")
+    ax[2].set_xscale("log"); ax[2].set_xlabel(r"fixed step $\epsilon$")
+    ax[2].set_ylabel("hallucinations repaired (%)")
+    ax[2].set_title("Repair vs step size, every cell", fontsize=10)
+    if len(rows) <= 10:
+        ax[2].legend(fontsize=7)
+    fig.tight_layout()
+    for ext in ("png", "pdf"):
+        fig.savefig(os.path.join(out, f"sweep.{ext}"), dpi=170)
+    plt.close(fig)
+    print(f"[pullback_sweep_viz] wrote {out}/sweep.png")
+    return {"figures": [os.path.join(out, "sweep")]}
