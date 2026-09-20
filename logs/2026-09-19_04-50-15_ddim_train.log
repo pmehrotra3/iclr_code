@@ -1,0 +1,124 @@
+======================================================================
+process:
+  name: ddim
+  T_train: 150
+  T_true: 1000
+  beta_min: 0.0001
+  beta_max: 0.02
+sweep:
+  d:
+  - 2
+  - 4
+  - 8
+  - 16
+  - 32
+  - 64
+  K:
+  - 2
+  - 4
+  - 8
+  - 16
+  - 32
+  anchors:
+  - 2000
+  - 10000
+  - 50000
+classifier:
+  _shared:
+    hidden: 256
+    depth: 4
+    degree: 3
+    epochs: 30
+    batch: 2048
+    lr: 0.003
+    weight_decay: 0.0001
+    min_steps: 3000
+    ensemble: 3
+    k: 10
+    bandwidth: 1.0
+    temperature: 0.1
+    threshold: auto
+    confidence: entropy
+  primary: polar3
+  models:
+  - name: knn
+    arch: knn
+  - name: altered_knn
+    arch: altered_knn
+  - name: polar3
+    arch: polar
+    degree: 3
+stages:
+- train
+device: cuda
+seed: 0
+run_id: 2026-09-19_04-50-15
+data:
+  sigma: 0.1
+  radius: 2.0
+  m_mult: 1.5
+  mass_q: 0.99
+train:
+  force_retrain: true
+  base_steps: 3000
+  lr: 0.001
+  batch: 512
+  probe_n: 10000
+  hall_target: 0.03
+  step_growth: 1.7
+  max_attempts: 6
+eval:
+  n_eval: 20000
+anchors:
+  seed: 0
+  shell_frac: 0.5
+  shell_sigma: 2.0
+  n_calibrate: 5000
+  altered_knn:
+    n_rings: 5
+    r_max: 1.5
+    weight: linear
+    w_min: 0.2
+paths:
+  root: ${oc.env:ATLAS_ROOT,${oc.env:PWD}}
+  data: ${paths.root}/data
+  output: ${paths.root}/output
+
+======================================================================
+
+>>> STAGE: train
+----------------------------------------
+[train:ddim] d= 2 K= 2 -> not_converged hall=0.0543 steps=53895 270.8s  ** above hall_target=0.03 **
+[train:ddim] d= 2 K= 4 -> not_converged hall=0.0367 steps=59882 287.1s  ** above hall_target=0.03 **
+[train:ddim] d= 2 K= 8 -> trained hall=0.0270 steps=14628 58.6s
+[train:ddim] d= 2 K=16 -> skipped
+[train:ddim] d= 2 K=32 -> skipped
+[train:ddim] d= 4 K= 2 -> not_converged hall=0.1100 steps=59882 287.6s  ** above hall_target=0.03 **
+[train:ddim] d= 4 K= 4 -> not_converged hall=0.0824 steps=66536 319.6s  ** above hall_target=0.03 **
+[train:ddim] d= 4 K= 8 -> trained hall=0.0271 steps=46976 219.1s
+[train:ddim] d= 4 K=16 -> trained hall=0.0280 steps=62639 292.1s
+[train:ddim] d= 4 K=32 -> trained hall=0.0275 steps=93959 437.0s
+[train:ddim] d= 8 K= 2 -> not_converged hall=0.2060 steps=71864 345.0s  ** above hall_target=0.03 **
+[train:ddim] d= 8 K= 4 -> not_converged hall=0.0725 steps=79859 384.5s  ** above hall_target=0.03 **
+[train:ddim] d= 8 K= 8 -> not_converged hall=0.0353 steps=95834 460.0s  ** above hall_target=0.03 **
+[train:ddim] d= 8 K=16 -> not_converged hall=0.0366 steps=127785 613.1s  ** above hall_target=0.03 **
+[train:ddim] d= 8 K=32 -> trained hall=0.0279 steps=191678 923.2s
+[train:ddim] d=16 K= 2 -> not_converged hall=0.2111 steps=95834 462.7s  ** above hall_target=0.03 **
+[train:ddim] d=16 K= 4 -> not_converged hall=0.1190 steps=106486 513.4s  ** above hall_target=0.03 **
+[train:ddim] d=16 K= 8 -> not_converged hall=0.0794 steps=127785 620.7s  ** above hall_target=0.03 **
+[train:ddim] d=16 K=16 -> not_converged hall=0.0648 steps=170382 896.7s  ** above hall_target=0.03 **
+[train:ddim] d=16 K=32 -> not_converged hall=0.0412 steps=255572 1229.3s  ** above hall_target=0.03 **
+[train:ddim] d=32 K= 2 -> not_converged hall=0.4639 steps=143753 689.7s  ** above hall_target=0.03 **
+[train:ddim] d=32 K= 4 -> not_converged hall=0.4187 steps=159730 769.5s  ** above hall_target=0.03 **
+[train:ddim] d=32 K= 8 -> not_converged hall=0.2766 steps=191678 918.9s  ** above hall_target=0.03 **
+[train:ddim] d=32 K=16 -> not_converged hall=0.2168 steps=255572 1220.9s  ** above hall_target=0.03 **
+[train:ddim] d=32 K=32 -> not_converged hall=0.1525 steps=383360 1852.3s  ** above hall_target=0.03 **
+[train:ddim] d=64 K= 2 -> not_converged hall=0.8853 steps=239589 1153.7s  ** above hall_target=0.03 **
+[train:ddim] d=64 K= 4 -> not_converged hall=0.8598 steps=266216 1282.0s  ** above hall_target=0.03 **
+[train:ddim] d=64 K= 8 -> not_converged hall=0.8310 steps=319465 1530.2s  ** above hall_target=0.03 **
+[train:ddim] d=64 K=16 -> not_converged hall=0.8228 steps=425957 2762.1s  ** above hall_target=0.03 **
+[train:ddim] d=64 K=32 -> not_converged hall=0.7810 steps=638934 3132.3s  ** above hall_target=0.03 **
+[train:ddim] manifest written: /home/pmehrotra3/workspace/test_run/iclr_code/data/ddim/manifest.json
+[train:ddim] WARNING: 23 cell(s) did not reach hall_target; their results reflect training error, not sampler geometry
+
+All requested stages complete.
