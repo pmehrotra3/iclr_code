@@ -11,7 +11,9 @@ import json
 import time
 import glob
 import fcntl
+import subprocess
 import torch
+from omegaconf import OmegaConf
 
 import core
 from processes.factory import make_process
@@ -110,8 +112,22 @@ def _cell_geometry(cfg, d, K, seed, device):
     return means_t, float(min_sep), core.r99(d, sigma, cfg.data.mass_q)
 
 
+def _git_commit():
+    """Current commit hash (with '-dirty' if the tree has changes), or None outside a repo."""
+    try:
+        h = subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL,
+                                    cwd=os.path.dirname(os.path.abspath(__file__))).decode().strip()
+        dirty = subprocess.run(["git", "diff", "--quiet"], stderr=subprocess.DEVNULL,
+                               cwd=os.path.dirname(os.path.abspath(__file__))).returncode != 0
+        return h + ("-dirty" if dirty else "")
+    except Exception:
+        return None
+
+
 def _save_cell(cfg, d, K, seed, proc, model, means_t, min_sep, R99, hall, used_steps, attempts):
-    """Write the checkpoint and the learned-sampler ground-truth cache for one repeat."""
+    """Write the checkpoint and the learned-sampler ground-truth cache for one repeat.
+    The full resolved Hydra config that produced the model is stored under ckpt["config"]
+    (a plain dict) so a checkpoint can always be traced back to exactly how it was trained."""
     sampler = cfg.process.name
     sigma = cfg.data.sigma
     T = cfg.process.T_train
@@ -130,6 +146,11 @@ def _save_cell(cfg, d, K, seed, proc, model, means_t, min_sep, R99, hall, used_s
         "steps": used_steps,
         "attempts": attempts,
         "arch": arch,
+        # provenance: the exact config this checkpoint was trained with
+        "config": OmegaConf.to_container(cfg, resolve=True),
+        "run_id": str(cfg.run_id),
+        "git_commit": _git_commit(),
+        "created": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     if sampler == "flow":
         ckpt["flow"] = {"sigma_min": float(cfg.process.sigma_min),
@@ -147,6 +168,14 @@ def _save_cell(cfg, d, K, seed, proc, model, means_t, min_sep, R99, hall, used_s
     except Exception as e:
         print(f"[train:{sampler}] gt cache skipped d={d} K={K} seed={seed}: {e}")
     return path, converged
+
+
+def _ckpt_T(path):
+    """T_train stored in a checkpoint, or None if it cannot be read."""
+    try:
+        return int(torch.load(path, map_location="cpu", weights_only=False)["T"])
+    except Exception:
+        return None
 
 
 def train_cell(cfg, d, K, seeds, device):
@@ -168,8 +197,14 @@ def train_cell(cfg, d, K, seeds, device):
     for seed in seeds:
         path = ckpt_path(cfg.paths.data, sampler, d, K, seed)
         if os.path.exists(path) and not cfg.train.force_retrain:
-            out[seed] = {"d": d, "K": K, "seed": seed, "path": path, "status": "cached"}
-            continue
+            # reuse only if it was trained with the requested T_train; a checkpoint left by a
+            # sweep with a different T would otherwise be evaluated (and averaged) silently
+            ck_T = _ckpt_T(path)
+            if ck_T == T:
+                out[seed] = {"d": d, "K": K, "seed": seed, "path": path, "status": "cached"}
+                continue
+            print(f"[train:{sampler}] d={d} K={K} seed={seed}: checkpoint has T={ck_T}, "
+                  f"want T_train={T} -> retraining")
         try:
             means_t, min_sep, R99 = _cell_geometry(cfg, d, K, seed, device)
         except ModePlacementError as e:

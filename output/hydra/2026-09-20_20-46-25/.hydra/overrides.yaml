@@ -1,0 +1,13 @@
+- process=flow
+- data=gmm
+- process.T_train=500
+- sweep.d=[2]
+- sweep.K=[4]
+- seed=0
+- n_seeds=3
+- data.radius=2.0
+- stages=[train]
+- train.force_retrain=true
+- train.graph_streams=true
+- run_id=2026-09-20_20-46-25
+- device=cuda

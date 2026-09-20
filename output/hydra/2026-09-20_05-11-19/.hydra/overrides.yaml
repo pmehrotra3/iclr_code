@@ -1,9 +1,0 @@
-- process=ddim
-- process.T_train=150
-- sweep.d=[128]
-- sweep.K=[4]
-- data.radius=2.0
-- stages=[train]
-- train.force_retrain=true
-- run_id=2026-09-19_22-11-24
-- device=cuda
