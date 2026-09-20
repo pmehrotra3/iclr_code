@@ -54,3 +54,56 @@
 >>> [gpu 3] 2026-09-20_20-46-25_flow_train_d2_K2.log
   [ok]   2026-09-20_20-46-25_ddim_train_d64_K4.log
 >>> [gpu 0] 2026-09-20_20-46-25_flow_train_d2_K4.log
+  [ok]   2026-09-20_20-46-25_flow_train_d2_K2.log
+>>> [gpu 3] 2026-09-20_20-46-25_flow_train_d2_K8.log
+  [ok]   2026-09-20_20-46-25_flow_train_d2_K4.log
+>>> [gpu 0] 2026-09-20_20-46-25_flow_train_d2_K16.log
+  [ok]   2026-09-20_20-46-25_flow_train_d2_K16.log
+>>> [gpu 0] 2026-09-20_20-46-25_flow_train_d4_K2.log
+  [ok]   2026-09-20_20-46-25_flow_train_d2_K8.log
+>>> [gpu 3] 2026-09-20_20-46-25_flow_train_d4_K4.log
+  [ok]   2026-09-20_20-46-25_flow_train_d4_K2.log
+>>> [gpu 0] 2026-09-20_20-46-25_flow_train_d4_K8.log
+  [ok]   2026-09-20_20-46-25_ddim_train_d64_K8.log
+  [ok]   2026-09-20_20-46-25_flow_train_d4_K4.log
+>>> [gpu 1] 2026-09-20_20-46-25_flow_train_d4_K16.log
+>>> [gpu 3] 2026-09-20_20-46-25_flow_train_d8_K2.log
+  [ok]   2026-09-20_20-46-25_flow_train_d4_K8.log
+>>> [gpu 0] 2026-09-20_20-46-25_flow_train_d8_K4.log
+  [ok]   2026-09-20_20-46-25_ddim_train_d64_K16.log
+>>> [gpu 2] 2026-09-20_20-46-25_flow_train_d8_K8.log
+  [ok]   2026-09-20_20-46-25_flow_train_d8_K2.log
+>>> [gpu 3] 2026-09-20_20-46-25_flow_train_d8_K16.log
+  [ok]   2026-09-20_20-46-25_flow_train_d8_K4.log
+>>> [gpu 0] 2026-09-20_20-46-25_flow_train_d16_K2.log
+  [ok]   2026-09-20_20-46-25_flow_train_d4_K16.log
+>>> [gpu 1] 2026-09-20_20-46-25_flow_train_d16_K4.log
+  [ok]   2026-09-20_20-46-25_flow_train_d8_K8.log
+>>> [gpu 2] 2026-09-20_20-46-25_flow_train_d16_K8.log
+  [ok]   2026-09-20_20-46-25_flow_train_d16_K2.log
+  [ok]   2026-09-20_20-46-25_flow_train_d8_K16.log
+>>> [gpu 0] 2026-09-20_20-46-25_flow_train_d16_K16.log
+>>> [gpu 3] 2026-09-20_20-46-25_flow_train_d32_K2.log
+  [ok]   2026-09-20_20-46-25_flow_train_d16_K8.log
+  [ok]   2026-09-20_20-46-25_flow_train_d16_K4.log
+>>> [gpu 2] 2026-09-20_20-46-25_flow_train_d32_K4.log
+>>> [gpu 1] 2026-09-20_20-46-25_flow_train_d32_K8.log
+  [ok]   2026-09-20_20-46-25_flow_train_d32_K2.log
+  [ok]   2026-09-20_20-46-25_flow_train_d16_K16.log
+>>> [gpu 3] 2026-09-20_20-46-25_flow_train_d32_K16.log
+>>> [gpu 0] 2026-09-20_20-46-25_flow_train_d64_K2.log
+  [ok]   2026-09-20_20-46-25_flow_train_d32_K4.log
+>>> [gpu 2] 2026-09-20_20-46-25_flow_train_d64_K4.log
+  [ok]   2026-09-20_20-46-25_flow_train_d32_K8.log
+>>> [gpu 1] 2026-09-20_20-46-25_flow_train_d64_K8.log
+  [ok]   2026-09-20_20-46-25_flow_train_d64_K2.log
+>>> [gpu 0] 2026-09-20_20-46-25_flow_train_d64_K16.log
+  [ok]   2026-09-20_20-46-25_flow_train_d32_K16.log
+  [ok]   2026-09-20_20-46-25_flow_train_d64_K4.log
+  [ok]   2026-09-20_20-46-25_flow_train_d64_K8.log
+  [ok]   2026-09-20_20-46-25_flow_train_d64_K16.log
+-- phase 2: evaluate + visualize --
+>>> [gpu 0] 2026-09-20_20-46-25_ddim_T100.log
+>>> [gpu 1] 2026-09-20_20-46-25_ddim_T200.log
+>>> [gpu 2] 2026-09-20_20-46-25_ddim_T500.log
+>>> [gpu 3] 2026-09-20_20-46-25_flow_T100.log

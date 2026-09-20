@@ -775,5 +775,77 @@
     "steps": 187500,
     "attempts": 1,
     "secs": 193.5
+  },
+  "64_8_s0": {
+    "d": 64,
+    "K": 8,
+    "seed": 0,
+    "path": "/home/pmehrotra3/workspace/test_run/iclr_code/data/ddim/checkpoints/model_d64_K8_s0.pt",
+    "status": "trained",
+    "hall_rate": 0.011099999770522118,
+    "converged": true,
+    "steps": 225000,
+    "attempts": 1,
+    "secs": 254.6
+  },
+  "64_8_s100": {
+    "d": 64,
+    "K": 8,
+    "seed": 100,
+    "path": "/home/pmehrotra3/workspace/test_run/iclr_code/data/ddim/checkpoints/model_d64_K8_s100.pt",
+    "status": "trained",
+    "hall_rate": 0.01249999925494194,
+    "converged": true,
+    "steps": 225000,
+    "attempts": 1,
+    "secs": 268.0
+  },
+  "64_8_s200": {
+    "d": 64,
+    "K": 8,
+    "seed": 200,
+    "path": "/home/pmehrotra3/workspace/test_run/iclr_code/data/ddim/checkpoints/model_d64_K8_s200.pt",
+    "status": "trained",
+    "hall_rate": 0.011500000022351742,
+    "converged": true,
+    "steps": 225000,
+    "attempts": 1,
+    "secs": 282.4
+  },
+  "64_16_s0": {
+    "d": 64,
+    "K": 16,
+    "seed": 0,
+    "path": "/home/pmehrotra3/workspace/test_run/iclr_code/data/ddim/checkpoints/model_d64_K16_s0.pt",
+    "status": "trained",
+    "hall_rate": 0.012899999506771564,
+    "converged": true,
+    "steps": 300000,
+    "attempts": 1,
+    "secs": 268.7
+  },
+  "64_16_s100": {
+    "d": 64,
+    "K": 16,
+    "seed": 100,
+    "path": "/home/pmehrotra3/workspace/test_run/iclr_code/data/ddim/checkpoints/model_d64_K16_s100.pt",
+    "status": "trained",
+    "hall_rate": 0.011899999342858791,
+    "converged": true,
+    "steps": 300000,
+    "attempts": 1,
+    "secs": 280.2
+  },
+  "64_16_s200": {
+    "d": 64,
+    "K": 16,
+    "seed": 200,
+    "path": "/home/pmehrotra3/workspace/test_run/iclr_code/data/ddim/checkpoints/model_d64_K16_s200.pt",
+    "status": "trained",
+    "hall_rate": 0.009599999524652958,
+    "converged": true,
+    "steps": 300000,
+    "attempts": 1,
+    "secs": 292.0
   }
 }

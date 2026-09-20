@@ -1,10 +1,10 @@
 process:
   T_train: 500
-  T_true: 200
-  name: flow
-  sigma_min: 0.0001
-  solver: euler
-  true_solver: heun
+  T_true: 100
+  name: ddim
+  beta_min: 0.0001
+  beta_max: 0.02
+  true_order: heun
 data:
   mass_q: 0.99
   name: gmm
@@ -14,14 +14,22 @@ data:
 sweep:
   d:
   - 2
-  K:
   - 4
+  - 8
+  - 16
+  - 32
+  - 64
+  K:
+  - 2
+  - 4
+  - 8
+  - 16
   anchors:
   - 20000
   - 50000
   - 100000
 train:
-  force_retrain: true
+  force_retrain: false
   base_steps: 30000
   lr: 0.001
   lr_min: 1.0e-05
@@ -79,7 +87,8 @@ classifier:
       arch: polar
       degree: 8
 stages:
-- train
+- evaluate
+- visualize
 device: cuda
 seed: 0
 n_seeds: 3

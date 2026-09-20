@@ -112,23 +112,24 @@ hydra:
     hydra:
     - hydra.mode=RUN
     task:
-    - process=flow
+    - process=ddim
     - data=gmm
     - process.T_train=500
-    - sweep.d=[2]
-    - sweep.K=[4]
+    - process.T_true=100
+    - sweep.d=[2,4,8,16,32,64]
+    - sweep.K=[2,4,8,16]
+    - sweep.anchors=[20000,50000,100000]
     - seed=0
     - n_seeds=3
     - data.radius=2.0
-    - stages=[train]
-    - train.force_retrain=true
-    - train.graph_streams=true
+    - stages=[evaluate,visualize]
+    - train.force_retrain=false
     - run_id=2026-09-20_20-46-25
     - device=cuda
   job:
     name: main
     chdir: false
-    override_dirname: data.radius=2.0,data=gmm,device=cuda,n_seeds=3,process.T_train=500,process=flow,run_id=2026-09-20_20-46-25,seed=0,stages=[train],sweep.K=[4],sweep.d=[2],train.force_retrain=true,train.graph_streams=true
+    override_dirname: data.radius=2.0,data=gmm,device=cuda,n_seeds=3,process.T_train=500,process.T_true=100,process=ddim,run_id=2026-09-20_20-46-25,seed=0,stages=[evaluate,visualize],sweep.K=[2,4,8,16],sweep.anchors=[20000,50000,100000],sweep.d=[2,4,8,16,32,64],train.force_retrain=false
     id: ???
     num: ???
     config_name: config
@@ -165,7 +166,7 @@ hydra:
       train: base
       sweep: base
       data: gmm
-      process: flow
+      process: ddim
       hydra/env: default
       hydra/callbacks: null
       hydra/job_logging: default
