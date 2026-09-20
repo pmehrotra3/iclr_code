@@ -1,0 +1,5 @@
+# sweep/base - the (d, K, anchors) experiment grid
+
+d: [2]                           # ambient dimensions to sweep
+K: [2, 4, 8, 16]                 # mode counts to sweep
+anchors: [20000, 50000, 100000]  # per-mode anchor budgets to sweep

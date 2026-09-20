@@ -1,0 +1,4 @@
+# process/base - general process settings shared by every process
+
+T_train: 150  # steps for the learned sampler
+T_true: 200   # steps for the analytic (exact-field) backtrack

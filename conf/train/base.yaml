@@ -1,0 +1,14 @@
+# train/base - learned-model training settings
+
+force_retrain: false  # retrain even if a checkpoint exists
+base_steps: 30000     # steps = base_steps * (1 + d/16) * (1 + K/16)
+lr: 0.001             # initial learning rate
+lr_min: 1.0e-5        # cosine-decay floor (null = off)
+grad_clip: 1.0        # gradient-norm clip (null = off)
+ema_decay: 0.999      # weight EMA decay (null = off)
+ema_warmup: 1000      # steps to ramp EMA decay up to ema_decay
+batch: 512            # minibatch size
+probe_n: 10000        # samples to probe the hallucination rate
+hall_target: 0.015    # retry until probe hall <= this
+step_growth: 1.7      # multiply steps by this on each retry
+max_attempts: 4       # give up after this many retries

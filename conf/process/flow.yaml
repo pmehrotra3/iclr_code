@@ -1,6 +1,10 @@
-name: flow
-T_train: 150
-T_true: 200
-sigma_min: 0.0001
-solver: euler         # learned-sampler ODE solver: euler | midpoint | heun | rk4
-true_solver: heun     # exact-velocity backtrack solver (Step 3): heun (2nd order) recommended
+# process/flow - Flow-Matching (OT path) specifics; builds on base
+
+defaults:
+  - base
+  - _self_
+
+name: flow         # process identifier
+sigma_min: 0.0001  # sigma_min in the OT path (Eq. 20-23)
+solver: euler      # learned-sampler ODE solver: euler | midpoint | heun | rk4
+true_solver: heun  # exact-velocity backtrack solver: heun recommended

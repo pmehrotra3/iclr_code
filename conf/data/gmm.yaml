@@ -1,0 +1,10 @@
+# data/gmm - Gaussian-mixture-on-a-sphere dataset; builds on base
+
+defaults:
+  - base
+  - _self_
+
+name: gmm    # dataset identifier
+sigma: 0.1   # within-mode standard deviation
+radius: 2.0  # base sphere radius (trainer scales by sqrt(d/2))
+m_mult: 1.5  # minimum mode-separation multiplier

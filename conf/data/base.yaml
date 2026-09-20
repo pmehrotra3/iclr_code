@@ -1,0 +1,3 @@
+# data/base - general dataset settings shared by every dataset
+
+mass_q: 0.99  # core mass fraction that defines R99

@@ -81,7 +81,11 @@ def eval_one(cfg, d, K, device):
     m_mode, m_hall = gt >= 0, gt == -1
     hall_gt = float(m_hall.float().mean())
 
-    specs = [_spec(cfg, m) for m in cfg.classifier.models]
+    # classifier.models may be a list (legacy) or a name->spec dict (composed per-method
+    # from conf/classifier/method/*.yaml). Iterate the entries either way.
+    _models = cfg.classifier.models
+    _entries = _models.values() if OmegaConf.is_dict(_models) else _models
+    specs = [_spec(cfg, m) for m in _entries]
     need_altered = any(s["arch"] == "altered_knn" for s in specs)
 
     # seeds labelled by the EXACT score at T_true: altered_knn's calibration set AND the
@@ -137,7 +141,6 @@ def run(cfg):
     sampler = cfg.process.name
     out_dir = sweep_dir(cfg.paths.output, cfg.run_id, sampler, cfg.process.T_true)
     os.makedirs(out_dir, exist_ok=True)
-    primary = str(cfg.classifier.primary)
 
     results = []
     for d in cfg.sweep.d:
@@ -147,22 +150,15 @@ def run(cfg):
                 print(f"[eval:{sampler}] d={d:>2} K={K:>2} -> no checkpoint, skipped")
                 continue
             results += rows
-            # console: the primary model's best budget for this cell
-            prim = [r for r in rows if r["model"] == primary]
-            best = max(prim, key=lambda r: r["full_acc"]) if prim else None
             hg = rows[0]["hall_gt"]
-            line = f"[eval:{sampler}] d={d:>2} K={K:>2} hall_gt={hg:.3f}"
-            if best:
-                line += (f" | {primary}: full={best['full_acc']:.3f} modeF1={best['mode_f1']:.3f} "
-                         f"hallF1={best['hall_f1']:.3f} @ {best['n_anchors']} anchors")
-            print(line)
+            print(f"[eval:{sampler}] d={d:>2} K={K:>2} hall_gt={hg:.3f}  ({len(rows)} rows)")
 
     js = os.path.join(out_dir, "results.json")
     with open(js, "w") as f:
         json.dump({"sampler": sampler, "run_id": cfg.run_id,
                    "config_sweep": {"d": list(cfg.sweep.d), "K": list(cfg.sweep.K),
                                     "anchors": budgets(cfg), "T_true": int(cfg.process.T_true)},
-                   "primary": primary, "metrics": list(fate.METRICS),
+                   "metrics": list(fate.METRICS),
                    "results": results}, f, indent=2)
 
     csv = os.path.join(out_dir, "results.csv")

@@ -1,0 +1,4 @@
+# classifier/altered_knn - altered-kNN predictor spec
+
+name: altered_knn  # predictor family
+arch: altered_knn  # implementation: weighted mode-only kNN

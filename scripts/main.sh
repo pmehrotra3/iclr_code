@@ -16,6 +16,9 @@
 #   2) EVAL+VIZ : one job per (process, T), reusing the cached checkpoints AND ground truth.
 # NGPU jobs run at a time; each job is pinned to one GPU via CUDA_VISIBLE_DEVICES.
 #
+#   data     : dataset group    (DATASET) -> data=<name>        (gmm | mnist)
+#   predictors to run are set in conf/config.yaml (not here)
+#
 #   ./scripts/main.sh
 #   DEVICE=cpu NGPU=2 DIMS="2" KS="2 4" TS="200" ANCHORS="[2000,10000]" ./scripts/main.sh
 
@@ -32,6 +35,14 @@ ANCHORS=${ANCHORS:-"[20000,50000,100000]"}                     # per-mode budget
 TTRAIN=${TTRAIN:-150}                                           # learned-sampler steps
 RADBASE=${RADBASE:-2.0}                                         # data.radius base (scaled by sqrt(d/2) in code)
 DEVICE=${DEVICE:-cuda}
+DATASET=${DATASET:-gmm}                                         # conf/data/<name>.yaml  (gmm | mnist)
+# which predictors run is decided in conf/config.yaml (delete a `classifier@classifier.models.*` line to skip one)
+# interpreter: honour an explicit PY=, else prefer python3, else python (faistos has no bare `python`)
+if [ -z "${PY:-}" ]; then
+  if command -v python3 >/dev/null 2>&1; then PY=python3
+  elif command -v python >/dev/null 2>&1; then PY=python
+  else echo "no python3/python on PATH" >&2; exit 1; fi
+fi
 EXTRA=${EXTRA:-}                                                # extra overrides, appended verbatim
 
 if [ -z "${NGPU:-}" ]; then
@@ -53,7 +64,7 @@ run_pool() {
       gpu=${FREE[0]}; FREE=("${FREE[@]:1}")
       log="${JOBS[$i]%%|*}"; args="${JOBS[$i]#*|}"; i=$((i+1))
       echo ">>> [gpu $gpu] $log"
-      ( CUDA_VISIBLE_DEVICES="$gpu" python code/main.py $args device="$DEVICE" > "logs/$log" 2>&1 \
+      ( CUDA_VISIBLE_DEVICES="$gpu" "$PY" code/main.py $args device="$DEVICE" > "logs/$log" 2>&1 \
           && echo "  [ok]   $log" || echo "  [FAIL] $log -> logs/$log" ) &
       RPID+=("$!"); RGPU+=("$gpu")
     done
@@ -73,6 +84,7 @@ echo "=============================================================="
 echo " sweep $STAMP : $NGPU GPU(s), fanned out per (process,d,K)"
 echo " processes=[$PROCESSES]  d=$DLIST  K=[$KS]  T_true=[$TS]  T_train=$TTRAIN"
 echo " anchors=$ANCHORS  radius(base)=$RADBASE (scaled by sqrt(d/2))  device=$DEVICE"
+echo " data=$DATASET  (predictors set in conf/config.yaml)"
 echo "=============================================================="
 
 # ---- phase 1: train, ONE job per (process, d, K) cell -> saturates every GPU ----
@@ -81,7 +93,7 @@ JOBS=()
 for P in $PROCESSES; do
   for D in $DIMS; do
     for K in $KS; do
-      JOBS+=("${STAMP}_${P}_train_d${D}_K${K}.log|process=$P process.T_train=$TTRAIN sweep.d=[$D] sweep.K=[$K] data.radius=$RADBASE stages=[train] train.force_retrain=true run_id=$STAMP $EXTRA")
+      JOBS+=("${STAMP}_${P}_train_d${D}_K${K}.log|process=$P data=$DATASET process.T_train=$TTRAIN sweep.d=[$D] sweep.K=[$K] data.radius=$RADBASE stages=[train] train.force_retrain=true run_id=$STAMP $EXTRA")
     done
   done
 done
@@ -93,7 +105,7 @@ KLIST="[$(echo $KS | tr ' ' ',')]"
 JOBS=()
 for P in $PROCESSES; do
   for T in $TS; do
-    JOBS+=("${STAMP}_${P}_T${T}.log|process=$P process.T_train=$TTRAIN process.T_true=$T sweep.d=$DLIST sweep.K=$KLIST sweep.anchors=$ANCHORS data.radius=$RADBASE stages=[evaluate,visualize] train.force_retrain=false run_id=$STAMP $EXTRA")
+    JOBS+=("${STAMP}_${P}_T${T}.log|process=$P data=$DATASET process.T_train=$TTRAIN process.T_true=$T sweep.d=$DLIST sweep.K=$KLIST sweep.anchors=$ANCHORS data.radius=$RADBASE stages=[evaluate,visualize] train.force_retrain=false run_id=$STAMP $EXTRA")
   done
 done
 run_pool

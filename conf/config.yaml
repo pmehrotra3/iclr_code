@@ -1,56 +1,33 @@
+# config - top-level run config; picks one option from each group below
+
 defaults:
-  - process: ddim
-  - sweep: default
-  - classifier: default
+  - process: ddim         # generative process: ddim | flow
+  - data: gmm             # dataset / manifold: gmm | mnist
+  - sweep: base           # the (d, K, anchors) grid
+  - train: base           # learned-model training
+  - eval: base            # ground-truth evaluation
+  - anchors: altered_knn  # atlas anchors (builds on anchors/base.yaml)
+  - classifier: base      # shared classifier defaults (_shared)
+
+  # predictors to run: delete a line to skip that predictor
+  - classifier@classifier.models.knn: knn
+  - classifier@classifier.models.altered_knn: altered_knn
+  - classifier@classifier.models.quadratic: quadratic
+  - classifier@classifier.models.polar8: polar8
   - _self_
 
-stages: [train, evaluate, visualize]
-device: auto
-seed: 0
-run_id: ${now:%Y-%m-%d_%H-%M-%S}   # one output dir per invocation; every stage in this run shares it
-
-data:
-  sigma: 0.1
-  radius: 2.0
-  m_mult: 1.5
-  mass_q: 0.99
-
-train:
-  force_retrain: false
-  base_steps: 30000       # steps = base_steps * (1 + d/16) * (1 + K/16)  (Step 1 recipe)
-  lr: 0.001
-  lr_min: 1.0e-5          # cosine-decay the lr from `lr` to this over the run (null = off)
-  grad_clip: 1.0          # clip the gradient norm to this each step (null = off)
-  ema_decay: 0.999        # EMA of the weights, loaded in at the end (null = off)
-  ema_warmup: 1000        # warm-up steps over which the EMA decay ramps up to ema_decay
-  batch: 512
-  probe_n: 10000
-  hall_target: 0.015      # retry until probe hall <= this (1% construction floor + 0.5%)
-  step_growth: 1.7
-  max_attempts: 4
-
-eval:
-  n_eval: 200000          # fresh seeds for the ground truth; large so ~1-2% hall metrics are stable
-
-# anchors planted in data space, then backtracked to seed space with the exact field
-anchors:
-  seed: 0
-  shell_frac: 0.5          # hallucination-band anchors per mode, as a fraction of the ball anchors
-  shell_sigma: 2.0         # band width in sigma: R99 .. R99 + shell_sigma * sigma
-  n_calibrate: 5000        # seeds labelled by the exact score to calibrate altered_knn's cut
-  altered_knn:             # altered_knn's own mode-only anchor set
-    n_rings: 5             # concentric spheres per mode, radius R99 * r_max * j / n_rings
-    r_max: 1.5
-    weight: linear         # linear | gaussian
-    w_min: 0.2
+stages: [train, evaluate, visualize]  # stages to run, in order
+device: auto                          # auto | cpu | cuda
+seed: 0                               # global RNG seed
+run_id: ${now:%Y-%m-%d_%H-%M-%S}      # one output dir per invocation
 
 paths:
-  root: ${oc.env:ATLAS_ROOT,${oc.env:PWD}}
-  data: ${paths.root}/data
-  output: ${paths.root}/output
+  root: ${oc.env:ATLAS_ROOT,${oc.env:PWD}}  # repo root
+  data: ${paths.root}/data                  # checkpoints + caches
+  output: ${paths.root}/output              # results + figures
 
 hydra:
   run:
-    dir: ${paths.output}/hydra/${now:%Y-%m-%d_%H-%M-%S}
+    dir: ${paths.output}/hydra/${run_id}
   job:
     chdir: false

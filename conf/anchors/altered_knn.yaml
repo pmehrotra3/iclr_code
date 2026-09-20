@@ -1,0 +1,11 @@
+# anchors/altered_knn - altered_knn ring anchors; builds on base
+
+defaults:
+  - base
+  - _self_
+
+altered_knn:
+  n_rings: 5      # concentric spheres per mode (R99 * r_max * j / n_rings)
+  r_max: 1.5      # outermost ring radius, in units of R99
+  weight: linear  # ring weighting: linear | gaussian
+  w_min: 0.2      # minimum ring weight

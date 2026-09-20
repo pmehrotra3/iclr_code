@@ -1,0 +1,4 @@
+# classifier/knn - kNN predictor spec
+
+name: knn  # predictor family
+arch: knn  # implementation: k-nearest-anchor vote

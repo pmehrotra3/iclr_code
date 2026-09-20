@@ -1,0 +1,10 @@
+# data/mnist - MNIST dataset (SCAFFOLD, no loader yet); builds on base
+
+defaults:
+  - base
+  - _self_
+
+name: mnist                         # dataset identifier (SCAFFOLD - no loader yet)
+root: ${paths.root}/datasets/mnist  # dataset location on disk
+latent_dim: 16                      # diffusion dimension (encoder output)
+n_classes: 10                       # fate classes = digit labels

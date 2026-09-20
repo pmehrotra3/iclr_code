@@ -1,6 +1,10 @@
-name: ddim
-T_train: 150
-T_true: 200
-beta_min: 1e-4
-beta_max: 0.02
-true_order: heun   # exact-score backtrack integrator: heun (2nd order) | euler (1st order)
+# process/ddim - DDIM (variance-preserving diffusion) specifics; builds on base
+
+defaults:
+  - base
+  - _self_
+
+name: ddim        # process identifier
+beta_min: 1e-4    # VP schedule: smallest beta
+beta_max: 0.02    # VP schedule: largest beta
+true_order: heun  # exact-score backtrack integrator: heun | euler

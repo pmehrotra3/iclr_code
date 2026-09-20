@@ -1,0 +1,6 @@
+# anchors/base - general atlas-anchor settings shared by every anchor set
+
+seed: 0            # RNG seed for anchor sampling
+shell_frac: 0.5    # hallucination-band anchors per mode (fraction of ball anchors)
+shell_sigma: 2.0   # band width in sigma: R99 .. R99 + shell_sigma * sigma
+n_calibrate: 5000  # seeds labelled by exact score to calibrate the hallucination cut

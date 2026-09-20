@@ -1,0 +1,3 @@
+# eval/base - ground-truth evaluation settings
+
+n_eval: 200000  # fresh seeds for ground truth (stable ~1-2% hall metrics)

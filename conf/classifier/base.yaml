@@ -1,0 +1,17 @@
+# classifier/base - shared predictor hyper-parameters (_shared)
+
+_shared:
+  hidden: 256           # MLP width (parametric)
+  depth: 4              # MLP depth (parametric)
+  degree: 3             # default polynomial degree
+  epochs: 30            # training epochs (parametric)
+  batch: 2048           # minibatch size
+  lr: 0.003             # learning rate
+  weight_decay: 0.0001  # L2 regularisation
+  min_steps: 3000       # minimum gradient steps
+  ensemble: 3           # models averaged (non-parametric: 1)
+  k: 10                 # knn / altered_knn neighbours
+  bandwidth: 1.0        # kernel: h = bandwidth * median nearest-anchor dist
+  temperature: 0.1      # altered_knn: softmax temperature on the vote
+  threshold: auto       # altered_knn: cut in [0,1] or auto (max F1 on calib)
+  confidence: entropy   # altered_knn: entropy | max
