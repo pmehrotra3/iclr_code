@@ -20,13 +20,6 @@ import core
 from processes.base import Process
 
 
-def _get(cfg, key, default):
-    """Read `key` from an OmegaConf/attr config, tolerating None/missing (returns default)."""
-    if cfg is None:
-        return default
-    v = getattr(cfg, key, default)
-    return default if v is None else v
-
 
 class FlowOTProcess(Process):
     name = "flow"
@@ -44,15 +37,14 @@ class FlowOTProcess(Process):
     def build_model(self, d):
         return core.ScoreNet(d).to(self.device)
 
-    def train_model(self, K, d, n_steps, lr, batch, seed):
+    def train_closure(self, K, d, batch, seed):
         torch.manual_seed(seed)
         model = self.build_model(d)
-        sigma0 = self.variance ** 0.5
         oms = 1.0 - self.sigma_min
+        draw = core._minibatch(self.means_t, self.variance, batch, self.n_train(), seed, self.device)
 
         def step():
-            k = torch.randint(0, K, (batch,), device=self.device)
-            x1 = self.means_t[k] + sigma0 * torch.randn(batch, d, device=self.device)
+            x1 = draw()                                                    # data endpoint
             x0 = torch.randn(batch, d, device=self.device)
             t = torch.rand(batch, device=self.device)                      # U[0,1]
             psi = (1 - oms * t)[:, None] * x0 + t[:, None] * x1            # Eq. 22
@@ -60,13 +52,12 @@ class FlowOTProcess(Process):
             ti = (t * (self.T - 1)).round().long().clamp(0, self.T - 1)    # embedding index
             return ((model(psi, ti) - target) ** 2).mean()
 
+        return model, step
+
+    def train_model(self, K, d, n_steps, lr, batch, seed):
         # same cosine-decay + grad-clip + EMA recipe as the DDIM score (Step 1)
-        t = getattr(self.cfg, "train", None)
-        return core.run_optimizer(
-            model, step, n_steps, lr,
-            lr_min=_get(t, "lr_min", None), grad_clip=_get(t, "grad_clip", None),
-            ema_decay=_get(t, "ema_decay", None), ema_warmup=int(_get(t, "ema_warmup", 0) or 0),
-        )
+        model, step = self.train_closure(K, d, batch, seed)
+        return core.run_optimizer(model, step, n_steps, lr, **self.optim_kwargs())
 
     # ---- ODE solvers ----
     def _step(self, f, x, t, dt, solver=None):

@@ -18,8 +18,11 @@ defaults:
 
 stages: [train, evaluate, visualize]  # stages to run, in order
 device: auto                          # auto | cpu | cuda
-seed: 0                               # global RNG seed
-run_id: ${now:%Y-%m-%d_%H-%M-%S}      # one output dir per invocation
+seed: 0                               # base RNG seed
+# independent repeats: seeds seed, seed+100, ... (each re-randomises the mode placement on the
+# sphere, the model init and the eval seeds); every metric is reported as mean +- std over them
+n_seeds: 3
+run_id: ${now:%Y-%m-%d_%H-%M-%S}      # one output dir per invocation; every stage shares it
 
 paths:
   root: ${oc.env:ATLAS_ROOT,${oc.env:PWD}}  # repo root

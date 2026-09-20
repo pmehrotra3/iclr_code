@@ -17,9 +17,14 @@ diffusion_atlas/
 │   ├── visualize.py   # STAGE 3: results.json -> figures (beside the results)
 │   └── main.py        # Hydra entry point dispatching the stages
 ├── conf/
-│   ├── config.yaml    # shared knobs + the defaults list (which process, which sweep)
-│   ├── process/       # per-process knobs: ddim.yaml, flow.yaml
-│   └── sweep/         # the (d, K, anchors) grid: default.yaml
+│   ├── config.yaml    # top-level knobs + the defaults list (one option from each group below)
+│   ├── process/       # generative process: base.yaml + ddim.yaml, flow.yaml
+│   ├── data/          # dataset: base.yaml + gmm.yaml, mnist.yaml
+│   ├── sweep/         # the (d, K, anchors) grid: base.yaml
+│   ├── train/         # learned-model training: base.yaml
+│   ├── eval/          # ground-truth evaluation: base.yaml
+│   ├── anchors/       # atlas anchors: base.yaml + altered_knn.yaml
+│   └── classifier/    # predictors: base.yaml (_shared) + one spec per predictor (knn, altered_knn, ...)
 ├── data/              # checkpoints/  and  manifest.json   (generated)
 └── output/            # per run: <sampler>/<run_id>/{results.json, results.csv, figures/}
 ```
@@ -88,12 +93,14 @@ Or just edit `conf/config.yaml`.
 
 ## What each stage writes
 
-- **train** → `data/<sampler>/checkpoints/model_d{d}_K{K}.pt` and `data/<sampler>/manifest.json`.
-  Idempotent: existing checkpoints are reused unless `train.force_retrain=true`.
-- **evaluate** → `output/<sampler>/<run_id>/results.json` (full, nested) and `results.csv`
-  (flat). For each `(d,K)`: the ground-truth hallucination rate, the analytic-responsibility
-  accuracy, and, for every anchor count in `sweep.anchors`, the atlas full/mode/hall accuracy
-  and the bandwidth used.
+- **train** → `data/<sampler>/checkpoints/model_d{d}_K{K}_s{seed}.pt` (one per repeat seed) and
+  `data/<sampler>/manifest.json`. Idempotent: existing checkpoints are reused unless
+  `train.force_retrain=true`.
+- **evaluate** → `output/<run_id>/<sampler>/T<T_true>/results.json`, `results.csv` (the
+  **mean ± std over seeds**, one row per `(d, K, budget, model)` with `<metric>` = mean and
+  `<metric>_std`) and `results_per_seed.csv` (the raw per-seed rows). For each `(d,K)`: the
+  ground-truth hallucination rate and, for every anchor count in `sweep.anchors`, every
+  predictor's full/mode/hall accuracy and F1.
 - **visualize** → heatmaps and tables under that run's `figures/<sampler>/T<T_true>/`:
   `hallucination_rate.png` and `responsibility.png` (both anchor-free), plus one
   `anchors_<n>/` per budget holding `atlas.png`, `table.tex` and `table.png`. Reads only
@@ -120,14 +127,43 @@ The defaults now follow the tuned recipe. Four changes lift the numbers over the
    `T_true` sweep runs the N-seed forward pass at most once per `(d, K)`. Delete `gt_cache/` to force
    a recompute.
 
+### Why `T_train` is 500 (was 150)
+
+The learned sampler's hallucination rate at `T_train=150` exploded with dimension (d=32: 10-44 %,
+d=64: 57-83 %, d=128: 99 %) -- and so does the **exact** score pushed through the same 150-step
+Euler DDIM (15 / 52 / 93 / 100 % at d = 32 / 64 / 128 / 256). It is discretisation error, not
+training error: a mode's 99 % ball is a shell of relative width ~1.2/sqrt(d), so a few percent of
+systematic variance error from the coarse integration ejects every sample in high d (and the
+linear beta schedule only reaches abar_T = 0.22 at T=150). With the exact score, T=300 still fails
+at d >= 128, while T=500 gives <= 0.6 % and T=1000 <= 0.8 % at every d up to 256. Training cost
+does not depend on T; only the sampling passes do.
+
+### Repeat seeds: every number is a mean ± std
+
+`n_seeds` (default 3) repeats the whole experiment for seeds `seed, seed+100, seed+200, ...`
+(`core.seed_list`). Each repeat re-draws the mode placement on the sphere, the model init and the
+evaluation seeds, so the std is over independent geometries, not just over training noise. Every
+metric in the console, `results.csv`, the LaTeX/PNG tables and the heatmaps is reported as
+mean ± std over those seeds; the best anchor budget per cell is chosen by mean full accuracy.
+
 ### Fast, full-GPU sweep
 
-`scripts/main.sh` saturates every GPU: phase 1 launches **one training job per `(process, d, K)`
-cell** (distinct checkpoint files, so no races), phase 2 one eval+viz job per `(process, T)`.
+The score nets are small MLPs at batch 512, so an eager training loop is bound by kernel-launch
+overhead (~6 ms of CPU per ~0.5 ms of GPU work: ~20 % GPU utilisation). `core.run_optimizers`
+therefore captures one whole optimiser step -- for **all seeds of a cell at once, one CUDA stream
+per seed** -- into a single CUDA graph and replays it (`train.cuda_graph`, `train.graph_streams`;
+same maths, ~15x the eager throughput per GPU). `train.cuda_graph=false` recovers the eager loop.
+
+`scripts/main.sh` fills every GPU: phase 1 launches **one training job per `(process, d, K)` cell**
+(all `NSEEDS` seeds of the cell trained together; distinct checkpoint files, so no races), phase 2
+one eval+viz job per `(process, T)`. Failed jobs are retried once (`RETRIES`). Keep
+`JOBS_PER_GPU=1` (the default): a job already trains its seeds concurrently, and several such
+processes on one GPU intermittently crash inside the driver, so `JOBS_PER_GPU>1` automatically
+falls back to single-stream graphs.
 
 ```bash
-./scripts/main.sh                                  # opt recipe: d=2, K∈{2,4,8,16}, T∈{100,200,500}
-DIMS="2 4 8 16" ./scripts/main.sh                  # wider dimension sweep
+./scripts/main.sh                                  # full grid, 3 seeds, 4 GPUs
+NSEEDS=5 DIMS="2 4 8 16" ./scripts/main.sh         # 5 repeats on a narrower dimension sweep
 DEVICE=cpu NGPU=2 DIMS="2" KS="2" TS="200" ANCHORS="[2000]" ./scripts/main.sh   # tiny CPU smoke
 ```
 

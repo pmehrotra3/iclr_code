@@ -14,13 +14,6 @@ import core
 from processes.base import Process
 
 
-def _get(cfg, key, default):
-    """Read `key` from an OmegaConf/attr config, tolerating None/missing (returns default)."""
-    if cfg is None:
-        return default
-    v = getattr(cfg, key, default)
-    return default if v is None else v
-
 
 class DDIMProcess(Process):
     name = "ddim"
@@ -37,14 +30,13 @@ class DDIMProcess(Process):
     def build_model(self, d):
         return core.ScoreNet(d).to(self.device)
 
+    def train_closure(self, K, d, batch, seed):
+        return core.learned_closure(self.means_t, d, K, self.abar, self.T, self.variance,
+                                    batch, seed, self.device, n_train=self.n_train())
+
     def train_model(self, K, d, n_steps, lr, batch, seed):
-        t = getattr(self.cfg, "train", None)
-        return core.train_learned(
-            self.means_t, d, K, self.abar, self.T, self.variance,
-            n_steps=n_steps, lr=lr, batch=batch, seed=seed, device=self.device,
-            lr_min=_get(t, "lr_min", None), grad_clip=_get(t, "grad_clip", None),
-            ema_decay=_get(t, "ema_decay", None), ema_warmup=int(_get(t, "ema_warmup", 0) or 0),
-        )
+        model, step = self.train_closure(K, d, batch, seed)
+        return core.run_optimizer(model, step, n_steps, lr, **self.optim_kwargs())
 
     @torch.no_grad()
     def sample(self, model, X0, chunk=50000):

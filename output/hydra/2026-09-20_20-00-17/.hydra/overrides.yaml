@@ -1,0 +1,12 @@
+- process=ddim
+- process.T_train=500
+- sweep.d=[32]
+- sweep.K=[32]
+- seed=0
+- n_seeds=3
+- data.radius=2.0
+- stages=[train]
+- train.force_retrain=false
+- train.graph_streams=true
+- run_id=2026-09-20_19-59-39
+- device=cuda

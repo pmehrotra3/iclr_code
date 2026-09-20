@@ -5,7 +5,9 @@ train.py and evaluate.py talk only to this contract, so adding a new sampler is 
 matter of dropping in another module that subclasses Process. Each process owns its
 own time convention internally and exposes a uniform API:
 
-    train_model(...)        -> a trained torch.nn.Module
+    train_closure(...)      -> (fresh torch.nn.Module, per-step loss closure); train.py groups
+                               the closures of a cell's seeds into one core.run_optimizers call
+    train_model(...)        -> a trained torch.nn.Module (train_closure + core.run_optimizer)
     sample(model, X0)       -> endpoints (data-space) from seeds X0
     seeds(N, d)             -> initial noise ~ N(0, I)
     true_field_backtrack(P) -> carry data-space points P back to seed space using the
@@ -37,8 +39,34 @@ class Process(ABC):
 
     # ---- learned model ----
     @abstractmethod
+    def train_closure(self, K, d, batch, seed):
+        """Return (untrained model, loss_closure) for one training run seeded by `seed`."""
+        ...
+
+    @abstractmethod
     def train_model(self, K, d, n_steps, lr, batch, seed):
         ...
+
+    def n_train(self):
+        """cfg.train.n_train: size of the fixed training set drawn per (d, K, seed); None/0 =
+        fresh samples every step (infinite data)."""
+        t = getattr(self.cfg, "train", None) if self.cfg is not None else None
+        v = getattr(t, "n_train", None) if t is not None else None
+        return int(v) if v else None
+
+    def optim_kwargs(self):
+        """The shared optimiser recipe from cfg.train (cosine lr, grad clip, EMA, CUDA graph),
+        as keyword arguments for core.run_optimizer / core.run_optimizers."""
+        t = getattr(self.cfg, "train", None) if self.cfg is not None else None
+
+        def get(key, default):
+            v = getattr(t, key, default) if t is not None else default
+            return default if v is None else v
+
+        return dict(lr_min=get("lr_min", None), grad_clip=get("grad_clip", None),
+                    ema_decay=get("ema_decay", None), ema_warmup=int(get("ema_warmup", 0) or 0),
+                    cuda_graph=bool(get("cuda_graph", True)),
+                    branch_streams=bool(get("graph_streams", True)))
 
     @abstractmethod
     def build_model(self, d):
