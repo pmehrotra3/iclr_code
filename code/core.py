@@ -355,44 +355,66 @@ def _run_optimizers_graph(models, loss_closures, n_steps, lr, lr_min, grad_clip,
 # --------------------------------------------------------------------------------------
 # learned model: train + sample
 # --------------------------------------------------------------------------------------
-def gmm_train_set(means_t, n, variance, seed, device=None):
-    """A fixed training set: n i.i.d. draws from the GMM (uniform mode, isotropic variance),
-    seeded so it is reproducible per (d, K, seed). Returns (X (n, d), mode index (n,))."""
+def mode_weights(K, seed, weighted, device=None):
+    """Mixing weights (K,) of the GMM. Uniform 1/K when not weighted; otherwise w_k ~ U(0,1)
+    i.i.d. normalised to sum 1, drawn from `seed` so each repeat gets its own assignment of
+    imbalance to modes (the mean +- std over seeds averages over those assignments)."""
+    if not weighted:
+        return torch.full((K,), 1.0 / K, device=device)
+    g = torch.Generator(device=device).manual_seed(int(seed) + 13)
+    w = torch.rand(K, generator=g, device=device)
+    return w / w.sum()
+
+
+def _draw_modes(K, n, weights, g, device):
+    """n mode indices: uniform when weights is None, else multinomial under weights."""
+    if weights is None:
+        return torch.randint(0, K, (n,), generator=g, device=device)
+    return torch.multinomial(weights.to(device), n, replacement=True, generator=g)
+
+
+def gmm_train_set(means_t, n, variance, seed, device=None, weights=None):
+    """A fixed training set: n i.i.d. draws from the GMM (mode ~ weights, uniform when None;
+    isotropic variance), seeded so it is reproducible per (d, K, seed). Returns (X (n, d),
+    mode index (n,))."""
     K, d = means_t.shape
     g = torch.Generator(device=device).manual_seed(int(seed) + 11)
-    k = torch.randint(0, K, (n,), generator=g, device=device)
+    k = _draw_modes(K, n, weights, g, device)
     X = means_t[k] + math.sqrt(variance) * torch.randn(n, d, generator=g, device=device)
     return X, k
 
 
-def _minibatch(means_t, variance, batch, n_train, seed, device):
+def _minibatch(means_t, variance, batch, n_train, seed, device, weights=None):
     """Return a sampler of clean minibatches x0 (batch, d): from a fixed training set of
     n_train GMM draws (minibatches re-drawn with replacement, so each step is a random subset),
-    or fresh i.i.d. draws every step when n_train is None (the infinite-data regime)."""
+    or fresh i.i.d. draws every step when n_train is None (the infinite-data regime).
+    Modes are drawn under `weights` (uniform when None)."""
     K, d = means_t.shape
     sigma = math.sqrt(variance)
     if n_train:
-        X, _ = gmm_train_set(means_t, int(n_train), variance, seed, device)
+        X, _ = gmm_train_set(means_t, int(n_train), variance, seed, device, weights)
 
         def draw():
             idx = torch.randint(0, X.shape[0], (batch,), device=device)
             return X.index_select(0, idx)
     else:
+        w = None if weights is None else weights.to(device)
+
         def draw():
-            k = torch.randint(0, K, (batch,), device=device)
+            k = _draw_modes(K, batch, w, None, device)
             return means_t[k] + sigma * torch.randn(batch, d, device=device)
     return draw
 
 
 def learned_closure(means_t, d, K, abar, T, variance, batch=512, seed=0, device=None,
-                    n_train=None):
+                    n_train=None, weights=None):
     """A fresh ScoreNet (init seeded by `seed`) and its eps-prediction loss closure: one
     minibatch of noised GMM samples at random steps, MSE against the noise. The clean samples
     come from a fixed n_train-sample training set (or fresh draws when n_train is None)."""
     torch.manual_seed(seed)
     sa = torch.sqrt(abar); soma = torch.sqrt(1 - abar)
     m = ScoreNet(d).to(device)
-    draw = _minibatch(means_t, variance, batch, n_train, seed, device)
+    draw = _minibatch(means_t, variance, batch, n_train, seed, device, weights)
 
     def step():
         x0 = draw()
@@ -449,26 +471,37 @@ def label_fate(Xf, means_t, R99, chunk=50000, device=None):
 # atlas, so its anchors are grounded in the true geometry rather than in whatever the
 # learned model happened to fit.
 #
-# true_score      : s(x) = sum_k w_k (mu_k - x)/v, with w = softmax(-||x-mu_k||^2 / 2v).
-#                   Callers pass the noised mixture at level t: means sqrt(ab)*mu,
-#                   variance v = ab*variance + (1-ab).
+# true_score      : s(x) = sum_k r_k (mu_k - x)/v, with r = softmax(log pi_k - ||x-mu_k||^2 / 2v)
+#                   the posterior responsibilities under mixing weights pi (uniform when
+#                   logw is None). Callers pass the noised mixture at level t: means
+#                   sqrt(ab)*mu, variance v = ab*variance + (1-ab).
 # backtrack_true  : runs the DDIM update forwards in t (noise increasing), driving it with
 #                   the true score instead of a network, so data-space points are carried
 #                   back to the seeds that would have produced them.
 # --------------------------------------------------------------------------------------
 @torch.no_grad()
-def true_score(X, Mt, v):
-    d2 = torch.cdist(X, Mt) ** 2
-    w = torch.softmax(-d2 / (2 * v), 1)
+def true_score(X, Mt, v, logw=None):
+    logits = -torch.cdist(X, Mt) ** 2 / (2 * v)
+    if logw is not None:
+        logits = logits + logw
+    w = torch.softmax(logits, 1)
     return (w @ Mt - X) / v
+
+
+def log_weights(weights, device=None):
+    """log mixing weights (1, K) for true_score / the flow velocity, or None when uniform."""
+    if weights is None:
+        return None
+    w = weights.to(device) if device is not None else weights
+    return torch.log(w.clamp_min(1e-30))[None, :]
 
 
 # --- exact-score DDIM building blocks (shared by the Euler and Heun integrators) ---
 @torch.no_grad()
-def _exact_eps(x, means_t, ab, variance):
+def _exact_eps(x, means_t, ab, variance, logw=None):
     """Closed-form eps-prediction of the exact GMM score at signal level `ab`."""
     v = ab * variance + (1 - ab)
-    sc = true_score(x, torch.sqrt(ab) * means_t, v)
+    sc = true_score(x, torch.sqrt(ab) * means_t, v, logw)
     return -torch.sqrt(1 - ab) * sc
 
 
@@ -480,7 +513,7 @@ def _ddim_step(x, eps, ab, abp):
 
 
 @torch.no_grad()
-def _ddim_transport(Xd, means_t, abar_t, order, levels, variance, chunk=50000):
+def _ddim_transport(Xd, means_t, abar_t, order, levels, variance, chunk=50000, logw=None):
     """Integrate the exact-score DDIM map along the sequence of (ab, abp) `levels`.
 
     order='euler': one exact-eps evaluation per step (first order).
@@ -493,28 +526,30 @@ def _ddim_transport(Xd, means_t, abar_t, order, levels, variance, chunk=50000):
     for ab, abp in levels:
         for s in range(0, X.shape[0], chunk):
             xs = X[s:s + chunk]
-            eps1 = _exact_eps(xs, means_t, ab, variance)
+            eps1 = _exact_eps(xs, means_t, ab, variance, logw)
             if heun:
                 xtil = _ddim_step(xs, eps1, ab, abp)
-                eps2 = _exact_eps(xtil, means_t, abp, variance)
+                eps2 = _exact_eps(xtil, means_t, abp, variance, logw)
                 eps1 = 0.5 * (eps1 + eps2)
             X[s:s + chunk] = _ddim_step(xs, eps1, ab, abp)
     return X
 
 
 @torch.no_grad()
-def backtrack_true(Xd, means_t, abar_t, T, variance, chunk=50000, order="heun"):
+def backtrack_true(Xd, means_t, abar_t, T, variance, chunk=50000, order="heun", weights=None):
     """Data -> seed (noise) under the exact GMM score. `order` in {euler, heun}."""
     levels = [(abar_t[i - 1], abar_t[i]) for i in range(1, T)]
-    return _ddim_transport(Xd, means_t, abar_t, order, levels, variance, chunk)
+    return _ddim_transport(Xd, means_t, abar_t, order, levels, variance, chunk,
+                           log_weights(weights, Xd.device))
 
 
 @torch.no_grad()
-def forward_true(X0, means_t, abar_t, T, variance, chunk=50000, order="heun"):
+def forward_true(X0, means_t, abar_t, T, variance, chunk=50000, order="heun", weights=None):
     """Seeds (noise) -> data under the exact GMM score, the inverse of backtrack_true. Used to
     label seeds by the exact score (the analytic reference), e.g. altered_knn's calibration set."""
     levels = [(abar_t[i], abar_t[i - 1]) for i in reversed(range(1, T))]
-    return _ddim_transport(X0, means_t, abar_t, order, levels, variance, chunk)
+    return _ddim_transport(X0, means_t, abar_t, order, levels, variance, chunk,
+                           log_weights(weights, X0.device))
 
 
 # --------------------------------------------------------------------------------------

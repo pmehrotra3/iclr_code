@@ -20,17 +20,23 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import torch
 
+import core
+
 
 class Process(ABC):
     name: str = "base"
 
-    def __init__(self, means_t, variance, T, device, cfg=None):
+    def __init__(self, means_t, variance, T, device, cfg=None, weights=None):
         self.means_t = means_t          # (K, d)
         self.variance = variance        # within-mode variance sigma0^2
         self.T = T                      # number of steps
         self.device = device
         self.cfg = cfg
         self.K, self.d = means_t.shape
+        # mixing weights (K,) over the modes; None = uniform. Used by the training data AND
+        # the exact reference process so both describe the same (weighted) GMM.
+        self.weights = None if weights is None else weights.to(device)
+        self.logw = core.log_weights(self.weights, device)
 
     # ---- seeds ----
     def seeds(self, N, d, seed):

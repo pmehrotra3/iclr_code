@@ -8,7 +8,8 @@ Per (d, K) cell, per anchor budget:
   3. Fit each predictor in classifier.models on the (seed, label) pairs -- knn, altered_knn,
      quadratic, polar8. altered_knn's confidence cut is calibrated on fresh seeds labelled by the
      exact score (proc.label(None, ...)); each parametric model also gets a <name>_cal variant.
-  4. Ground truth: eval.n_eval fresh seeds pushed through the LEARNED sampler, labelled with L.
+  4. Ground truth: eval.n_eval_per_mode * K fresh seeds pushed through the LEARNED sampler,
+     labelled with L.
   5. Score every predictor against that ground truth (fate.fate_metrics).
 
 The whole thing is repeated for every seed in core.seed_list(cfg) (each seed = its own mode
@@ -32,7 +33,7 @@ from omegaconf import OmegaConf
 import core
 import fate
 from processes.factory import make_process
-from train import ckpt_path, sweep_dir, load_gt_cache, save_gt_cache
+from train import ckpt_path, sweep_dir, load_gt_cache, save_gt_cache, n_eval_for, variant_of
 
 
 def load_ckpt(path, device):
@@ -62,7 +63,8 @@ def eval_one(cfg, d, K, seed, device):
     """Evaluate one (d, K) cell for one repeat `seed`: every predictor at every anchor budget.
     Returns result rows."""
     sampler = cfg.process.name
-    path = ckpt_path(cfg.paths.data, sampler, d, K, seed)
+    variant = variant_of(cfg)
+    path = ckpt_path(cfg.paths.data, sampler, d, K, seed, variant)
     if not os.path.exists(path):
         return None
 
@@ -71,19 +73,23 @@ def eval_one(cfg, d, K, seed, device):
     T, R99, variance = ck["T"], ck["R99"], ck["variance"]
     sigma = float(variance ** 0.5)
     a = cfg.anchors
+    # mixing weights the model was trained on (older checkpoints: none = uniform); the exact
+    # reference process must describe the same weighted GMM
+    weights = ck.get("weights", None)
 
-    proc = make_process(sampler, means_t, variance, T, device, cfg)
-    proc_true = make_process(sampler, means_t, variance, int(cfg.process.T_true), device, cfg)
+    proc = make_process(sampler, means_t, variance, T, device, cfg, weights)
+    proc_true = make_process(sampler, means_t, variance, int(cfg.process.T_true), device, cfg,
+                             weights)
 
     # ---- ground truth: where the LEARNED model actually sends each eval seed ----
     # Reuse the cache written by train (identical for every T_true); recompute + write through
     # only on a miss, so a full T sweep runs the N-seed forward pass at most once per (d, K).
-    n_eval = int(cfg.eval.n_eval)
+    n_eval = n_eval_for(cfg, K)
     X_te = proc.seeds(n_eval, d, seed + 1)
-    gt = load_gt_cache(cfg.paths.data, sampler, d, K, n_eval, seed, device)
+    gt = load_gt_cache(cfg.paths.data, sampler, d, K, n_eval, seed, device, variant)
     if gt is None:
         gt = core.label_fate(proc.sample(model, X_te), means_t, R99)
-        save_gt_cache(cfg.paths.data, sampler, d, K, gt, n_eval, T, R99, seed)
+        save_gt_cache(cfg.paths.data, sampler, d, K, gt, n_eval, T, R99, seed, variant)
     del model
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -172,7 +178,8 @@ def aggregate(results):
 def run(cfg):
     device = core.get_device(cfg.device)
     sampler = cfg.process.name
-    out_dir = sweep_dir(cfg.paths.output, cfg.run_id, sampler, cfg.process.T_true)
+    variant = variant_of(cfg)
+    out_dir = sweep_dir(cfg.paths.output, cfg.run_id, sampler, cfg.process.T_true, variant)
     os.makedirs(out_dir, exist_ok=True)
     # console model: classifier.primary if set, else the first configured model
     _models = cfg.classifier.models
@@ -209,7 +216,8 @@ def run(cfg):
     agg = aggregate(results)
     js = os.path.join(out_dir, "results.json")
     with open(js, "w") as f:
-        json.dump({"sampler": sampler, "run_id": cfg.run_id,
+        json.dump({"sampler": sampler, "variant": variant, "weighted": variant == "weighted",
+                   "run_id": cfg.run_id,
                    "config_sweep": {"d": list(cfg.sweep.d), "K": list(cfg.sweep.K),
                                     "anchors": budgets(cfg), "T_true": int(cfg.process.T_true),
                                     "seeds": seeds},

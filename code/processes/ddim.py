@@ -18,8 +18,8 @@ from processes.base import Process
 class DDIMProcess(Process):
     name = "ddim"
 
-    def __init__(self, means_t, variance, T, device, cfg=None):
-        super().__init__(means_t, variance, T, device, cfg)
+    def __init__(self, means_t, variance, T, device, cfg=None, weights=None):
+        super().__init__(means_t, variance, T, device, cfg, weights)
         proc = getattr(cfg, "process", None) if cfg is not None else None
         beta_min = float(getattr(proc, "beta_min", 1e-4)) if proc is not None else 1e-4
         beta_max = float(getattr(proc, "beta_max", 0.02)) if proc is not None else 0.02
@@ -32,7 +32,8 @@ class DDIMProcess(Process):
 
     def train_closure(self, K, d, batch, seed):
         return core.learned_closure(self.means_t, d, K, self.abar, self.T, self.variance,
-                                    batch, seed, self.device, n_train=self.n_train())
+                                    batch, seed, self.device, n_train=self.n_train(),
+                                    weights=self.weights)
 
     def train_model(self, K, d, n_steps, lr, batch, seed):
         model, step = self.train_closure(K, d, batch, seed)
@@ -56,12 +57,14 @@ class DDIMProcess(Process):
     def true_field_backtrack(self, Pd, chunk=50000):
         # reuse the shared true-score backtrack (data -> noise), Heun 2nd-order by default
         return core.backtrack_true(
-            Pd, self.means_t, self.abar, self.T, self.variance, chunk=chunk, order=self.true_order
+            Pd, self.means_t, self.abar, self.T, self.variance, chunk=chunk, order=self.true_order,
+            weights=self.weights,
         )
 
     @torch.no_grad()
     def true_field_forward(self, X0, chunk=50000):
         # exact-score DDIM forward (noise -> data), inverse of true_field_backtrack
         return core.forward_true(
-            X0, self.means_t, self.abar, self.T, self.variance, chunk=chunk, order=self.true_order
+            X0, self.means_t, self.abar, self.T, self.variance, chunk=chunk, order=self.true_order,
+            weights=self.weights,
         )

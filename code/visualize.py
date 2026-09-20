@@ -28,16 +28,18 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from train import resolve_sweep_dir
+from train import resolve_sweep_dir, variant_of
 
 PANELS = [("full_acc", "full accuracy"), ("mode_f1", "mode F1"), ("hall_f1", "hallucination F1")]
 
 
 def _load(cfg):
-    d = resolve_sweep_dir(cfg.paths.output, cfg.run_id, cfg.process.name, cfg.process.T_true)
+    d = resolve_sweep_dir(cfg.paths.output, cfg.run_id, cfg.process.name, cfg.process.T_true,
+                          variant_of(cfg))
     if d is None:
         raise FileNotFoundError(
-            f"no results found for {cfg.process.name} T={cfg.process.T_true} under {cfg.paths.output}")
+            f"no results found for {cfg.process.name}/{variant_of(cfg)} T={cfg.process.T_true} "
+            f"under {cfg.paths.output}")
     with open(os.path.join(d, "results.json")) as f:
         return json.load(f), d
 
@@ -215,7 +217,8 @@ def run(cfg) -> dict:
         print("[viz] results.json is empty, nothing to plot")
         return {"figures": []}
 
-    sampler = blob.get("sampler", cfg.process.name)
+    # label the figures/table with the variant so weighted and unweighted outputs are telling apart
+    sampler = blob.get("sampler", cfg.process.name) + "/" + blob.get("variant", variant_of(cfg))
     T_true = blob.get("config_sweep", {}).get("T_true", "NA")
     ds, Ks = _axes(results)
     models = _models(results)

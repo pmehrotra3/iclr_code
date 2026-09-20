@@ -1,3 +1,6 @@
 # eval/base - ground-truth evaluation settings
 
-n_eval: 200000  # fresh seeds for ground truth (stable ~1-2% hall metrics)
+# ground-truth seeds pushed through the learned sampler = n_eval_per_mode * K, so the per-mode
+# sample count stays constant as K grows (K=2 -> 40k, K=16 -> 320k)
+n_eval_per_mode: 20000
+n_eval: null          # set to a fixed count to override the per-mode scaling regardless of K

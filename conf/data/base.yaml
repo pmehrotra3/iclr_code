@@ -1,3 +1,10 @@
 # data/base - general dataset settings shared by every dataset
 
 mass_q: 0.99  # core mass fraction that defines R99
+# mixing weights over the K modes. false: uniform 1/K. true: per seed, w_k ~ U(0,1) i.i.d. then
+# w /= sum(w), so every repeat (seed) assigns a different random imbalance to the modes and the
+# mean +- std over seeds averages over those assignments. The training data, the learned model
+# and the exact reference process (true score / OT velocity) all use the same weights.
+# weighted and unweighted runs are separate experiments: data/<process>/<weighted|unweighted>/
+# and output/<run_id>/<process>/<weighted|unweighted>/
+weighted: false

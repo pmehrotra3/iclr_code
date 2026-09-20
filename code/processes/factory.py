@@ -10,7 +10,7 @@ _REGISTRY = {
 }
 
 
-def make_process(name, means_t, variance, T, device, cfg=None):
+def make_process(name, means_t, variance, T, device, cfg=None, weights=None):
     if name not in _REGISTRY:
         raise ValueError(f"unknown sampler '{name}'. choose from {list(_REGISTRY)}")
-    return _REGISTRY[name](means_t, variance, T, device, cfg)
+    return _REGISTRY[name](means_t, variance, T, device, cfg, weights)

@@ -10,7 +10,7 @@
 #   seeds    : repeats           (NSEEDS) -> n_seeds  (base SEED; seeds SEED, SEED+100, ...)
 #              every metric is reported as mean +- std over them
 #
-# One shared timestamp per invocation. Output: output/<timestamp>/<process>/T<T>/...
+# One shared timestamp per invocation. Output: output/<timestamp>/<process>/<unweighted|weighted>/T<T>/...
 #
 # Two phases, each fanned out across ALL GPUs (never one-process-per-GPU):
 #   1) TRAIN    : ONE job per (process, d, K) cell, training all NSEEDS repeats of the cell at
@@ -22,6 +22,8 @@
 # failed job is re-run RETRIES times before it is reported.
 #
 #   data     : dataset group    (DATASET) -> data=<name>        (gmm | mnist)
+#   weighted : mixing weights   (WEIGHTED)-> data.weighted     ("false true" = both experiments;
+#              separate checkpoints/caches/results under <process>/<unweighted|weighted>/)
 #   predictors to run are set in conf/config.yaml (not here)
 #
 #   ./scripts/main.sh
@@ -52,6 +54,9 @@ FORCE=${FORCE:-true}                                            # false: keep ex
 EVAL_JOBS_PER_GPU=${EVAL_JOBS_PER_GPU:-1}                       # concurrent jobs per GPU (eval phase; heavier)
 DEVICE=${DEVICE:-cuda}
 DATASET=${DATASET:-gmm}                                         # conf/data/<name>.yaml  (gmm | mnist)
+WEIGHTED=${WEIGHTED:-"false true"}                              # data.weighted values to run: unweighted
+                                                                # (uniform modes) and/or weighted (random
+                                                                # per-seed mixing weights); separate runs
 # which predictors run is decided in conf/config.yaml (delete a `classifier@classifier.models.*` line to skip one)
 # interpreter: honour an explicit PY=, else prefer python3, else python (faistos has no bare `python`)
 if [ -z "${PY:-}" ]; then
@@ -106,34 +111,40 @@ echo " sweep $STAMP : $NGPU GPU(s) x $JOBS_PER_GPU jobs, fanned out per (process
 echo " processes=[$PROCESSES]  d=$DLIST  K=[$KS]  T_true=[$TS]  T_train=$TTRAIN"
 echo " seeds: $NSEEDS from $SEED (stride 100)  anchors=$ANCHORS"
 echo " radius(base)=$RADBASE (scaled by sqrt(d/2))  device=$DEVICE"
-echo " data=$DATASET  (predictors set in conf/config.yaml)"
+echo " data=$DATASET  weighted=[$WEIGHTED]  (predictors set in conf/config.yaml)"
 echo "=============================================================="
 
-# ---- phase 1: train, ONE job per (process, d, K) cell (all seeds together) ----
+vname() { [ "$1" = true ] && echo weighted || echo unweighted; }   # data.weighted -> folder name
+
+# ---- phase 1: train, ONE job per (process, variant, d, K) cell (all seeds together) ----
 # Smallest cells first so results (and phase 2 for them) appear early; ORDER=desc for biggest-first.
 echo "-- phase 1: train (one job per cell, $NSEEDS seeds each, $JOBS_PER_GPU jobs per GPU) --"
 STREAMS=true; [ "$JOBS_PER_GPU" -gt 1 ] && STREAMS=false        # see core.run_optimizers
 JOBS=()
 for P in $PROCESSES; do
-  for D in $(echo $DIMS | tr ' ' '\n' | sort $SORTFLAG); do
-    for K in $(echo $KS | tr ' ' '\n' | sort $SORTFLAG); do
-      JOBS+=("${STAMP}_${P}_train_d${D}_K${K}.log|process=$P data=$DATASET process.T_train=$TTRAIN sweep.d=[$D] sweep.K=[$K] seed=$SEED n_seeds=$NSEEDS data.radius=$RADBASE stages=[train] train.force_retrain=$FORCE train.graph_streams=$STREAMS run_id=$STAMP $EXTRA")
+  for W in $WEIGHTED; do V=$(vname $W)
+    for D in $(echo $DIMS | tr ' ' '\n' | sort $SORTFLAG); do
+      for K in $(echo $KS | tr ' ' '\n' | sort $SORTFLAG); do
+        JOBS+=("${STAMP}_${P}_${V}_train_d${D}_K${K}.log|process=$P data=$DATASET data.weighted=$W process.T_train=$TTRAIN sweep.d=[$D] sweep.K=[$K] seed=$SEED n_seeds=$NSEEDS data.radius=$RADBASE stages=[train] train.force_retrain=$FORCE train.graph_streams=$STREAMS run_id=$STAMP $EXTRA")
+      done
     done
   done
 done
 run_pool "$JOBS_PER_GPU"
 
-# ---- phase 2: evaluate + visualize, one job per (process, T), reusing checkpoints + gt cache ----
+# ---- phase 2: evaluate + visualize, one job per (process, variant, T), reusing checkpoints + gt cache ----
 echo "-- phase 2: evaluate + visualize --"
 KLIST="[$(echo $KS | tr ' ' ',')]"
 JOBS=()
 for P in $PROCESSES; do
-  for T in $TS; do
-    JOBS+=("${STAMP}_${P}_T${T}.log|process=$P data=$DATASET process.T_train=$TTRAIN process.T_true=$T sweep.d=$DLIST sweep.K=$KLIST sweep.anchors=$ANCHORS seed=$SEED n_seeds=$NSEEDS data.radius=$RADBASE stages=[evaluate,visualize] train.force_retrain=false run_id=$STAMP $EXTRA")
+  for W in $WEIGHTED; do V=$(vname $W)
+    for T in $TS; do
+      JOBS+=("${STAMP}_${P}_${V}_T${T}.log|process=$P data=$DATASET data.weighted=$W process.T_train=$TTRAIN process.T_true=$T sweep.d=$DLIST sweep.K=$KLIST sweep.anchors=$ANCHORS seed=$SEED n_seeds=$NSEEDS data.radius=$RADBASE stages=[evaluate,visualize] train.force_retrain=false run_id=$STAMP $EXTRA")
+    done
   done
 done
 run_pool "$EVAL_JOBS_PER_GPU"
 
 echo "=============================================================="
-echo " sweep complete -> output/$STAMP/<process>/T<T>/"
+echo " sweep complete -> output/$STAMP/<process>/<unweighted|weighted>/T<T>/"
 echo "=============================================================="

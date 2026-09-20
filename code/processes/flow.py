@@ -24,8 +24,8 @@ from processes.base import Process
 class FlowOTProcess(Process):
     name = "flow"
 
-    def __init__(self, means_t, variance, T, device, cfg=None):
-        super().__init__(means_t, variance, T, device, cfg)
+    def __init__(self, means_t, variance, T, device, cfg=None, weights=None):
+        super().__init__(means_t, variance, T, device, cfg, weights)
         proc = getattr(cfg, "process", None) if cfg is not None else None
         self.sigma_min = float(getattr(proc, "sigma_min", 1e-4)) if proc is not None else 1e-4
         self.solver = str(getattr(proc, "solver", "euler")) if proc is not None else "euler"
@@ -41,7 +41,8 @@ class FlowOTProcess(Process):
         torch.manual_seed(seed)
         model = self.build_model(d)
         oms = 1.0 - self.sigma_min
-        draw = core._minibatch(self.means_t, self.variance, batch, self.n_train(), seed, self.device)
+        draw = core._minibatch(self.means_t, self.variance, batch, self.n_train(), seed, self.device,
+                               self.weights)
 
         def step():
             x1 = draw()                                                    # data endpoint
@@ -108,15 +109,18 @@ class FlowOTProcess(Process):
         x_t | k ~ N(t mu_k, (t^2 sigma^2 + s_t^2) I). Marginal velocity is
         (E[x1 | x] - (1 - sigma_min) x) / s_t with
         E[x1 | x] = sum_k r_k m_k,  m_k = mu_k + t sigma^2 (x - t mu_k) / var_t,
-        var_t = t^2 sigma^2 + s_t^2, and r_k the responsibilities under the component marginals.
+        var_t = t^2 sigma^2 + s_t^2, and r_k the responsibilities under the component marginals
+        (including the mixing weights pi_k when the GMM is weighted).
         Keeping the sigma^2 terms is what makes the field finite at t = 1 and the pass invertible.
         """
         oms = 1.0 - self.sigma_min
         st = max(1.0 - oms * t, 1e-6)
         M = self.means_t                                     # (K, d)
         var_t = t * t * self.variance + st * st              # per-component marginal variance
-        d2 = torch.cdist(x, t * M) ** 2                      # (N, K)
-        r = torch.softmax(-d2 / (2 * var_t), dim=1)          # (N, K)
+        logits = -torch.cdist(x, t * M) ** 2 / (2 * var_t)   # (N, K)
+        if self.logw is not None:
+            logits = logits + self.logw
+        r = torch.softmax(logits, dim=1)                     # (N, K)
         gain = t * self.variance / var_t
         # sum_k r_k m_k = (1 - t gain)(r @ M) + gain x   (since m_k = mu_k + gain (x - t mu_k))
         m_bar = (1 - t * gain) * (r @ M) + gain * x
