@@ -11,13 +11,21 @@ Per (d, K) cell, per anchor budget:
   4. Ground truth: eval.n_eval fresh seeds pushed through the LEARNED sampler, labelled with L.
   5. Score every predictor against that ground truth (fate.fate_metrics).
 
-Results go to output/<process>/<run_id>/results.{json,csv}: one row per (d, K, budget, model).
+The whole thing is repeated for every seed in core.seed_list(cfg) (each seed = its own mode
+placement, learned model and eval seeds) and every metric is reported as mean +- std over the
+seeds. Results go to output/<run_id>/<process>/T<T_true>/:
+    results.json           "results": one row per (seed, d, K, budget, model)
+                           "aggregate": one row per (d, K, budget, model) with <metric> = mean
+                           over seeds, <metric>_std = std (ddof=0), n_seeds
+    results.csv            the aggregate (mean, std columns)
+    results_per_seed.csv   the per-seed rows
 No plotting here.
 """
 from __future__ import annotations
 import os
 import json
 import time
+import numpy as np
 import torch
 from omegaconf import OmegaConf
 
@@ -50,10 +58,11 @@ def budgets(cfg):
     return [int(x) for x in ([b] if isinstance(b, (int, float, str)) else b)]
 
 
-def eval_one(cfg, d, K, device):
-    """Evaluate one (d, K) cell: every predictor at every anchor budget. Returns result rows."""
+def eval_one(cfg, d, K, seed, device):
+    """Evaluate one (d, K) cell for one repeat `seed`: every predictor at every anchor budget.
+    Returns result rows."""
     sampler = cfg.process.name
-    path = ckpt_path(cfg.paths.data, sampler, d, K)
+    path = ckpt_path(cfg.paths.data, sampler, d, K, seed)
     if not os.path.exists(path):
         return None
 
@@ -70,11 +79,11 @@ def eval_one(cfg, d, K, device):
     # Reuse the cache written by train (identical for every T_true); recompute + write through
     # only on a miss, so a full T sweep runs the N-seed forward pass at most once per (d, K).
     n_eval = int(cfg.eval.n_eval)
-    X_te = proc.seeds(n_eval, d, cfg.seed + 1)
-    gt = load_gt_cache(cfg.paths.data, sampler, d, K, n_eval, cfg.seed, device)
+    X_te = proc.seeds(n_eval, d, seed + 1)
+    gt = load_gt_cache(cfg.paths.data, sampler, d, K, n_eval, seed, device)
     if gt is None:
         gt = core.label_fate(proc.sample(model, X_te), means_t, R99)
-        save_gt_cache(cfg.paths.data, sampler, d, K, gt, n_eval, T, R99, cfg.seed)
+        save_gt_cache(cfg.paths.data, sampler, d, K, gt, n_eval, T, R99, seed)
     del model
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -86,7 +95,7 @@ def eval_one(cfg, d, K, device):
 
     # seeds labelled by the EXACT score at T_true: altered_knn's calibration set AND the
     # prior-calibration target for the parametric models (Step 4).
-    X_cal = proc.seeds(int(a.n_calibrate), d, cfg.seed + 2)
+    X_cal = proc.seeds(int(a.n_calibrate), d, seed + 2)
     y_cal = proc_true.label(None, X_cal, R99)
     cal_rate = float((y_cal == -1).float().mean())      # exact-score hallucination fraction
 
@@ -114,7 +123,7 @@ def eval_one(cfg, d, K, device):
                     net.calibrate(X_cal, y_cal)
             n_anchors = int(nets[0].X.shape[0]) if hasattr(nets[0], "X") else int(A.shape[0])
             met = fate.fate_metrics(fate.predict_fate(nets, X_te), gt)   # steps 4 + 5
-            rows.append({"d": d, "K": K, "n_per_mode": int(b), "n_anchors": n_anchors,
+            rows.append({"seed": seed, "d": d, "K": K, "n_per_mode": int(b), "n_anchors": n_anchors,
                          "model": spec["name"], "arch": spec["arch"],
                          "hall_gt": hall_gt, "n_mode": int(m_mode.sum()), "n_hall": int(m_hall.sum()),
                          "secs": round(time.time() - t0, 1), **met})
@@ -124,12 +133,36 @@ def eval_one(cfg, d, K, device):
             if spec["arch"] in fate.PARAMETRIC:
                 bias = fate.hall_bias_for_rate(nets, X_cal, cal_rate)
                 met_c = fate.fate_metrics(fate.predict_fate(nets, X_te, hall_bias=bias), gt)
-                rows.append({"d": d, "K": K, "n_per_mode": int(b), "n_anchors": n_anchors,
+                rows.append({"seed": seed, "d": d, "K": K, "n_per_mode": int(b), "n_anchors": n_anchors,
                              "model": spec["name"] + "_cal", "arch": spec["arch"],
                              "hall_gt": hall_gt, "n_mode": int(m_mode.sum()), "n_hall": int(m_hall.sum()),
                              "secs": round(time.time() - t0, 1), **met_c})
 
     return rows
+
+
+AGG_KEYS = ("hall_gt",) + tuple(fate.METRICS)     # per-seed scalars summarised as mean +- std
+
+
+def aggregate(results):
+    """Collapse per-seed rows into one row per (d, K, n_per_mode, model): every key in AGG_KEYS
+    becomes its mean over seeds, with a <key>_std companion (population std, ddof=0), plus
+    n_seeds and the seed list. n_anchors is the same for every seed and is carried through."""
+    groups = {}
+    for r in results:
+        groups.setdefault((r["d"], r["K"], int(r["n_per_mode"]), r["model"]), []).append(r)
+    out = []
+    for (d, K, b, model), rs in groups.items():
+        rs = sorted(rs, key=lambda r: r["seed"])
+        row = {"d": d, "K": K, "n_per_mode": b, "n_anchors": rs[0]["n_anchors"],
+               "model": model, "arch": rs[0]["arch"],
+               "n_seeds": len(rs), "seeds": [r["seed"] for r in rs]}
+        for k in AGG_KEYS:
+            v = np.array([r[k] for r in rs], dtype=np.float64)
+            row[k] = float(np.nanmean(v)) if np.isfinite(v).any() else float("nan")
+            row[k + "_std"] = float(np.nanstd(v)) if np.isfinite(v).any() else float("nan")
+        out.append(row)
+    return out
 
 
 def run(cfg):
@@ -138,41 +171,61 @@ def run(cfg):
     out_dir = sweep_dir(cfg.paths.output, cfg.run_id, sampler, cfg.process.T_true)
     os.makedirs(out_dir, exist_ok=True)
     primary = str(cfg.classifier.primary)
+    seeds = core.seed_list(cfg)
 
     results = []
     for d in cfg.sweep.d:
         for K in cfg.sweep.K:
-            rows = eval_one(cfg, int(d), int(K), device)
-            if rows is None:
-                print(f"[eval:{sampler}] d={d:>2} K={K:>2} -> no checkpoint, skipped")
+            cell = []
+            for seed in seeds:
+                rows = eval_one(cfg, int(d), int(K), seed, device)
+                if rows is None:
+                    print(f"[eval:{sampler}] d={d:>2} K={K:>2} seed={seed:<4} -> no checkpoint, skipped")
+                    continue
+                cell += rows
+            if not cell:
                 continue
-            results += rows
-            # console: the primary model's best budget for this cell
-            prim = [r for r in rows if r["model"] == primary]
+            results += cell
+            # console: the primary model's best budget (by mean full accuracy) for this cell
+            agg = aggregate(cell)
+            prim = [r for r in agg if r["model"] == primary]
             best = max(prim, key=lambda r: r["full_acc"]) if prim else None
-            hg = rows[0]["hall_gt"]
-            line = f"[eval:{sampler}] d={d:>2} K={K:>2} hall_gt={hg:.3f}"
+            hg, hs = agg[0]["hall_gt"], agg[0]["hall_gt_std"]
+            line = f"[eval:{sampler}] d={d:>2} K={K:>2} seeds={agg[0]['n_seeds']} hall_gt={hg:.3f}+-{hs:.3f}"
             if best:
-                line += (f" | {primary}: full={best['full_acc']:.3f} modeF1={best['mode_f1']:.3f} "
-                         f"hallF1={best['hall_f1']:.3f} @ {best['n_anchors']} anchors")
+                line += (f" | {primary}: full={best['full_acc']:.3f}+-{best['full_acc_std']:.3f}"
+                         f" modeF1={best['mode_f1']:.3f}+-{best['mode_f1_std']:.3f}"
+                         f" hallF1={best['hall_f1']:.3f}+-{best['hall_f1_std']:.3f}"
+                         f" @ {best['n_anchors']} anchors")
             print(line)
 
+    agg = aggregate(results)
     js = os.path.join(out_dir, "results.json")
     with open(js, "w") as f:
         json.dump({"sampler": sampler, "run_id": cfg.run_id,
                    "config_sweep": {"d": list(cfg.sweep.d), "K": list(cfg.sweep.K),
-                                    "anchors": budgets(cfg), "T_true": int(cfg.process.T_true)},
+                                    "anchors": budgets(cfg), "T_true": int(cfg.process.T_true),
+                                    "seeds": seeds},
                    "primary": primary, "metrics": list(fate.METRICS),
-                   "results": results}, f, indent=2)
+                   "results": results, "aggregate": agg}, f, indent=2)
 
     csv = os.path.join(out_dir, "results.csv")
     with open(csv, "w") as f:
-        f.write("sampler,d,K,hall_gt,model,arch,n_per_mode,n_anchors,"
+        f.write("sampler,d,K,n_seeds,hall_gt,hall_gt_std,model,arch,n_per_mode,n_anchors,"
+                + ",".join(f"{k},{k}_std" for k in fate.METRICS) + "\n")
+        for r in agg:
+            f.write(f"{sampler},{r['d']},{r['K']},{r['n_seeds']},{r['hall_gt']:.4f},{r['hall_gt_std']:.4f},"
+                    f"{r['model']},{r['arch']},{r['n_per_mode']},{r['n_anchors']},"
+                    + ",".join(f"{r[k]:.4f},{r[k + '_std']:.4f}" for k in fate.METRICS) + "\n")
+
+    csv_s = os.path.join(out_dir, "results_per_seed.csv")
+    with open(csv_s, "w") as f:
+        f.write("sampler,seed,d,K,hall_gt,model,arch,n_per_mode,n_anchors,"
                 + ",".join(fate.METRICS) + "\n")
         for r in results:
-            f.write(f"{sampler},{r['d']},{r['K']},{r['hall_gt']:.4f},{r['model']},{r['arch']},"
+            f.write(f"{sampler},{r['seed']},{r['d']},{r['K']},{r['hall_gt']:.4f},{r['model']},{r['arch']},"
                     f"{r['n_per_mode']},{r['n_anchors']},"
                     + ",".join(f"{r[k]:.4f}" for k in fate.METRICS) + "\n")
 
-    print(f"[eval:{sampler}] wrote {js} and {csv}")
-    return {"json": js, "csv": csv, "n_results": len(results)}
+    print(f"[eval:{sampler}] wrote {js}, {csv} (mean +- std over {len(seeds)} seeds) and {csv_s}")
+    return {"json": js, "csv": csv, "n_results": len(results), "n_aggregate": len(agg)}

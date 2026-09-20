@@ -36,6 +36,20 @@ def get_device(pref: str = "auto") -> torch.device:
 
 
 # --------------------------------------------------------------------------------------
+# repeat seeds
+# The sweep is repeated over cfg.n_seeds independent seeds, spaced 100 apart from cfg.seed so
+# the per-purpose offsets (+1 eval, +2 calibration, +7 probe) of different repeats never
+# coincide. Each repeat re-samples the mode placement, the model init and the eval seeds.
+# --------------------------------------------------------------------------------------
+SEED_STRIDE = 100
+
+
+def seed_list(cfg) -> list[int]:
+    n = int(getattr(cfg, "n_seeds", 1) or 1)
+    return [int(cfg.seed) + SEED_STRIDE * i for i in range(n)]
+
+
+# --------------------------------------------------------------------------------------
 # noising schedule
 # Linear betas over T steps. Returns abar[i] = prod(1 - beta), the signal left at step i:
 # x_t = sqrt(abar)*x0 + sqrt(1-abar)*noise.
@@ -156,11 +170,60 @@ def _ema_decay(step: int, decay: float, warmup: int) -> float:
     return decay
 
 
+def _cosine_lr(step: int, n_steps: int, lr: float, lr_min: float | None) -> float:
+    """Per-step lr of torch's CosineAnnealingLR(T_max=n_steps, eta_min=lr_min): the value in
+    force at `step` when the scheduler is stepped once after every optimizer step."""
+    if lr_min is None or n_steps <= 1:
+        return lr
+    return lr_min + (lr - lr_min) * 0.5 * (1.0 + math.cos(math.pi * step / n_steps))
+
+
 def run_optimizer(model, loss_closure, n_steps, lr=1e-3, lr_min=None, grad_clip=None,
-                  ema_decay=None, ema_warmup=0):
+                  ema_decay=None, ema_warmup=0, cuda_graph=True, branch_streams=True):
     """Optimise `model` for `n_steps` steps; loss_closure() returns the scalar loss each step.
 
-    Returns the model with EMA weights loaded (when ema_decay is set)."""
+    Returns the model with EMA weights loaded (when ema_decay is set). One-model wrapper of
+    run_optimizers (see there for the CUDA-graph fast path)."""
+    return run_optimizers([model], [loss_closure], n_steps, lr, lr_min, grad_clip,
+                          ema_decay, ema_warmup, cuda_graph, branch_streams)[0]
+
+
+def run_optimizers(models, loss_closures, n_steps, lr=1e-3, lr_min=None, grad_clip=None,
+                   ema_decay=None, ema_warmup=0, cuda_graph=True, branch_streams=True):
+    """Optimise several independent models for the same `n_steps` steps, each with its own
+    loss_closure() (Adam + cosine lr decay + grad-norm clip + EMA, identically per model).
+    Returns the models with EMA weights loaded (when ema_decay is set).
+
+    On CUDA the whole step of EVERY model (closure + backward + clip + Adam + EMA) is captured
+    into ONE CUDA graph, each model on its own stream as a parallel branch, and that graph is
+    replayed n_steps times. The networks here are small MLPs at batch ~512: the eager loop is
+    bound by kernel-launch overhead (~6 ms of CPU per ~0.5 ms of GPU work) and one model's
+    kernels are too small to fill the GPU, so the graph removes the per-step Python and the
+    parallel branches overlap the models' kernels (~6x from the graph, ~2x more from 3-4
+    branches; same maths). The lr and EMA-decay schedules are precomputed into device tables
+    read inside the graph through an on-device step counter, so nothing syncs. A single graph
+    is used on purpose: separately-replayed graphs racing on multiple streams are not safe
+    (shared RNG state), one graph with branches is. `cuda_graph=False` (or a CPU device)
+    runs the plain eager loop, model after model, which is the reference for what the graph
+    computes.
+
+    branch_streams=False puts every model on the capture stream instead (branches run one
+    after another inside the graph; ~2x slower for 3+ models but with no stream concurrency).
+    Use it whenever MORE THAN ONE such training process shares a GPU: with two or more
+    concurrent processes each replaying a multi-stream graph on the same GPU (driver 565,
+    torch 2.5) a fraction of them die with "illegal memory access", while one process per GPU
+    (alongside unrelated work) and the single-stream form are both stable -- see
+    scripts/main.sh, which sets this from JOBS_PER_GPU."""
+    assert len(models) == len(loss_closures) and models
+    device = next(models[0].parameters()).device
+    if cuda_graph and device.type == "cuda":
+        return _run_optimizers_graph(models, loss_closures, n_steps, lr, lr_min, grad_clip,
+                                     ema_decay, ema_warmup, branch_streams)
+    return [_run_optimizer_eager(m, c, n_steps, lr, lr_min, grad_clip, ema_decay, ema_warmup)
+            for m, c in zip(models, loss_closures)]
+
+
+def _run_optimizer_eager(model, loss_closure, n_steps, lr, lr_min, grad_clip, ema_decay, ema_warmup):
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     sched = None
     if lr_min is not None and n_steps > 1:
@@ -190,26 +253,164 @@ def run_optimizer(model, loss_closure, n_steps, lr=1e-3, lr_min=None, grad_clip=
     return model
 
 
+class _GraphBranch:
+    """One model's per-step work for _run_optimizers_graph: capturable Adam, grad clip and a
+    foreach EMA, with the lr / decay of the current step read from shared device tables."""
+
+    def __init__(self, model, loss_closure, lr_tab, dcy_tab, grad_clip):
+        self.model, self.closure, self.grad_clip = model, loss_closure, grad_clip
+        self.params = list(model.parameters())
+        self.lr_tab, self.dcy_tab = lr_tab, dcy_tab
+        self.lr_t = lr_tab[0].clone()
+        # capturable Adam takes the lr as a device tensor and never syncs on its step count
+        self.opt = torch.optim.Adam(self.params, lr=self.lr_t, foreach=True, capturable=True)
+        self.ema_f = None
+        if dcy_tab is not None:
+            self.dcy_t = dcy_tab[0].clone()
+            self.omd_t = 1.0 - self.dcy_t
+            sd = model.state_dict()                              # views of the live weights
+            self.ema_keys = list(sd.keys())
+            self.live_f = [v for v in sd.values() if v.dtype.is_floating_point]
+            self.ema_f = [v.detach().clone() for v in self.live_f]
+            self.ema_o = {k: (v, v.detach().clone()) for k, v in sd.items()
+                          if not v.dtype.is_floating_point}
+
+    def step(self, step_t):
+        self.lr_t.copy_(self.lr_tab.index_select(0, step_t).squeeze(0))
+        loss = self.closure()
+        loss.backward()
+        if self.grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(self.params, self.grad_clip, foreach=True)
+        self.opt.step()
+        self.opt.zero_grad(set_to_none=False)                    # keep the grad buffers the graph owns
+        if self.ema_f is not None:
+            self.dcy_t.copy_(self.dcy_tab.index_select(0, step_t).squeeze(0))
+            self.omd_t.copy_(1.0 - self.dcy_t)
+            with torch.no_grad():
+                torch._foreach_mul_(self.ema_f, self.dcy_t)
+                torch._foreach_add_(self.ema_f, torch._foreach_mul(self.live_f, self.omd_t))
+                for v, e in self.ema_o.values():
+                    e.copy_(v)
+
+    def finish(self):
+        if self.ema_f is None:
+            return self.model
+        sd = self.model.state_dict()
+        it = iter(self.ema_f)
+        out = {k: (next(it) if sd[k].dtype.is_floating_point else self.ema_o[k][1])
+               for k in self.ema_keys}
+        self.model.load_state_dict(out)
+        return self.model
+
+
+def _run_optimizers_graph(models, loss_closures, n_steps, lr, lr_min, grad_clip,
+                          ema_decay, ema_warmup, branch_streams=True, n_warmup=3):
+    """CUDA-graph version of the loop (see run_optimizers). Same per-step semantics as the
+    eager loop: lr(step) = cosine schedule, EMA decay(step) = _ema_decay, clip before Adam."""
+    device = next(models[0].parameters()).device
+    n_warmup = min(n_warmup, n_steps)
+
+    # schedules as device tables, shared by every branch; `step_t` indexes them from inside
+    # the graph
+    lr_tab = torch.tensor([_cosine_lr(s, n_steps, lr, lr_min) for s in range(n_steps)],
+                          dtype=torch.float32, device=device)
+    dcy_tab = None
+    if ema_decay:
+        dcy_tab = torch.tensor([_ema_decay(s, ema_decay, ema_warmup) for s in range(n_steps)],
+                               dtype=torch.float32, device=device)
+    step_t = torch.zeros((1,), dtype=torch.long, device=device)
+    branches = [_GraphBranch(m, c, lr_tab, dcy_tab, grad_clip) for m, c in zip(models, loss_closures)]
+    streams = [torch.cuda.Stream() if branch_streams else None for _ in branches]
+
+    def one_round(parent):
+        # fork: every branch waits for the parent stream, runs its step on its own stream;
+        # join: the parent waits for all of them, then the shared counter advances
+        for b, s in zip(branches, streams):
+            if s is None:
+                b.step(step_t)
+                continue
+            s.wait_stream(parent)
+            with torch.cuda.stream(s):
+                b.step(step_t)
+        for s in streams:
+            if s is not None:
+                parent.wait_stream(s)
+        step_t.add_(1)
+
+    # warm-up rounds allocate grads / Adam state before capture (these are real steps)
+    main = torch.cuda.current_stream()
+    for _ in range(n_warmup):
+        one_round(main)
+
+    if n_steps > n_warmup:
+        g = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(g):                                # records the round; does not run it
+            one_round(torch.cuda.current_stream())
+        for _ in range(n_steps - n_warmup):
+            g.replay()
+    torch.cuda.synchronize()
+    return [b.finish() for b in branches]
+
+
 # --------------------------------------------------------------------------------------
 # learned model: train + sample
 # --------------------------------------------------------------------------------------
-def train_learned(means_t, d, K, abar, T, variance, n_steps,
-                  lr=1e-3, batch=512, seed=0, device=None,
-                  lr_min=None, grad_clip=None, ema_decay=None, ema_warmup=0):
+def gmm_train_set(means_t, n, variance, seed, device=None):
+    """A fixed training set: n i.i.d. draws from the GMM (uniform mode, isotropic variance),
+    seeded so it is reproducible per (d, K, seed). Returns (X (n, d), mode index (n,))."""
+    K, d = means_t.shape
+    g = torch.Generator(device=device).manual_seed(int(seed) + 11)
+    k = torch.randint(0, K, (n,), generator=g, device=device)
+    X = means_t[k] + math.sqrt(variance) * torch.randn(n, d, generator=g, device=device)
+    return X, k
+
+
+def _minibatch(means_t, variance, batch, n_train, seed, device):
+    """Return a sampler of clean minibatches x0 (batch, d): from a fixed training set of
+    n_train GMM draws (minibatches re-drawn with replacement, so each step is a random subset),
+    or fresh i.i.d. draws every step when n_train is None (the infinite-data regime)."""
+    K, d = means_t.shape
+    sigma = math.sqrt(variance)
+    if n_train:
+        X, _ = gmm_train_set(means_t, int(n_train), variance, seed, device)
+
+        def draw():
+            idx = torch.randint(0, X.shape[0], (batch,), device=device)
+            return X.index_select(0, idx)
+    else:
+        def draw():
+            k = torch.randint(0, K, (batch,), device=device)
+            return means_t[k] + sigma * torch.randn(batch, d, device=device)
+    return draw
+
+
+def learned_closure(means_t, d, K, abar, T, variance, batch=512, seed=0, device=None,
+                    n_train=None):
+    """A fresh ScoreNet (init seeded by `seed`) and its eps-prediction loss closure: one
+    minibatch of noised GMM samples at random steps, MSE against the noise. The clean samples
+    come from a fixed n_train-sample training set (or fresh draws when n_train is None)."""
     torch.manual_seed(seed)
     sa = torch.sqrt(abar); soma = torch.sqrt(1 - abar)
     m = ScoreNet(d).to(device)
-    sigma = math.sqrt(variance)
+    draw = _minibatch(means_t, variance, batch, n_train, seed, device)
 
     def step():
-        k = torch.randint(0, K, (batch,), device=device)
-        x0 = means_t[k] + sigma * torch.randn(batch, d, device=device)
+        x0 = draw()
         ti = torch.randint(0, T, (batch,), device=device)
         noise = torch.randn_like(x0)
         xt = sa[ti][:, None] * x0 + soma[ti][:, None] * noise
         return ((m(xt, ti) - noise) ** 2).mean()
 
-    return run_optimizer(m, step, n_steps, lr, lr_min, grad_clip, ema_decay, ema_warmup)
+    return m, step
+
+
+def train_learned(means_t, d, K, abar, T, variance, n_steps,
+                  lr=1e-3, batch=512, seed=0, device=None,
+                  lr_min=None, grad_clip=None, ema_decay=None, ema_warmup=0, cuda_graph=True,
+                  branch_streams=True):
+    m, step = learned_closure(means_t, d, K, abar, T, variance, batch, seed, device)
+    return run_optimizer(m, step, n_steps, lr, lr_min, grad_clip, ema_decay, ema_warmup,
+                         cuda_graph=cuda_graph, branch_streams=branch_streams)
 
 
 @torch.no_grad()

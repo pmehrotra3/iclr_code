@@ -1,14 +1,16 @@
 
 """
-train.py — Stage 1. Train one learned model per (d, K) for the SELECTED process and save
+train.py — Stage 1. Train one learned model per (d, K, seed) for the SELECTED process and save
 a checkpoint. Checkpoints live under data/<process>/checkpoints so ddim and flow runs never
-collide. Idempotent unless cfg.train.force_retrain.
+collide. The seeds are cfg.n_seeds repeats from cfg.seed (core.seed_list); each repeat draws
+its own mode placement. Idempotent unless cfg.train.force_retrain.
 """
 from __future__ import annotations
 import os
 import json
 import time
 import glob
+import fcntl
 import torch
 
 import core
@@ -55,19 +57,19 @@ def resolve_sweep_dir(base, run_id, sampler, T_true):
     return os.path.dirname(hits[-1]) if hits else None
  
  
-def ckpt_path(data_dir, sampler, d, K):
+def ckpt_path(data_dir, sampler, d, K, seed):
     return os.path.join(sampler_dir(data_dir, sampler), "checkpoints",
-                        f"model_d{d}_K{K}.pt")
+                        f"model_d{d}_K{K}_s{seed}.pt")
 
 
-def gt_cache_path(data_dir, sampler, d, K):
+def gt_cache_path(data_dir, sampler, d, K, seed):
     """Cached learned-sampler ground-truth fate labels, so evaluate does not recompute the
-    N-seed forward pass once per T_true. Keyed by (sampler, d, K)."""
-    return os.path.join(sampler_dir(data_dir, sampler), "gt_cache", f"d{d}_K{K}.pt")
+    N-seed forward pass once per T_true. Keyed by (sampler, d, K, seed)."""
+    return os.path.join(sampler_dir(data_dir, sampler), "gt_cache", f"d{d}_K{K}_s{seed}.pt")
 
 
 def save_gt_cache(data_dir, sampler, d, K, gt, n_eval, T_train, R99, seed):
-    p = gt_cache_path(data_dir, sampler, d, K)
+    p = gt_cache_path(data_dir, sampler, d, K, seed)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     torch.save({"gt": gt.detach().cpu(), "n_eval": int(n_eval), "seed": int(seed),
                 "T_train": int(T_train), "R99": float(R99)}, p)
@@ -75,7 +77,7 @@ def save_gt_cache(data_dir, sampler, d, K, gt, n_eval, T_train, R99, seed):
 
 def load_gt_cache(data_dir, sampler, d, K, n_eval, seed, device):
     """Return cached gt labels (on `device`) when present and matching (n_eval, seed), else None."""
-    p = gt_cache_path(data_dir, sampler, d, K)
+    p = gt_cache_path(data_dir, sampler, d, K, seed)
     if not os.path.exists(p):
         return None
     try:
@@ -91,68 +93,47 @@ class ModePlacementError(RuntimeError):
     """Raised when the requested (d, K, R, sigma) geometry cannot be placed."""
  
  
-def train_one(cfg, d, K, device):
-    sampler = cfg.process.name
-    path = ckpt_path(cfg.paths.data, sampler, d, K)
-    if os.path.exists(path) and not cfg.train.force_retrain:
-        return {"d": d, "K": K, "path": path, "status": "cached"}
- 
+def _cell_geometry(cfg, d, K, seed, device):
+    """Mode placement for one repeat: (means_t, min_sep, R99). Raises ModePlacementError."""
     sigma = cfg.data.sigma
-    variance = sigma ** 2
     # the mode-sphere radius scales with d (R(d) = data.radius * sqrt(d/2), so d=2 -> data.radius),
     # keeping the modes resolvable as the dimension grows.
     radius = float(cfg.data.radius) * (d / 2.0) ** 0.5
     try:
         means_t, min_sep = core.sample_modes(
-            K, d, radius, sigma, cfg.data.m_mult, seed=cfg.seed, device=device
+            K, d, radius, sigma, cfg.data.m_mult, seed=seed, device=device
         )
     except RuntimeError as e:
         # sample_modes is the only geometry failure; re-raise as a distinct type so run()
         # does not also swallow CUDA OOM and other torch RuntimeErrors as "skipped".
         raise ModePlacementError(str(e)) from e
- 
+    return means_t, float(min_sep), core.r99(d, sigma, cfg.data.mass_q)
+
+
+def _save_cell(cfg, d, K, seed, proc, model, means_t, min_sep, R99, hall, used_steps, attempts):
+    """Write the checkpoint and the learned-sampler ground-truth cache for one repeat."""
+    sampler = cfg.process.name
+    sigma = cfg.data.sigma
     T = cfg.process.T_train
-    R99 = core.r99(d, sigma, cfg.data.mass_q)
- 
-    proc = make_process(sampler, means_t, variance, T, device, cfg)
- 
-    if cfg.train.max_attempts < 1:
-        raise ValueError("train.max_attempts must be >= 1")
- 
-    steps = int(cfg.train.base_steps * (1 + d / 16) * (1 + K / 16))
-    t0 = time.time()
-    model, hall, used_steps = None, 1.0, steps
-    for attempt in range(cfg.train.max_attempts):
-        used_steps = steps
-        model = proc.train_model(K, d, steps, cfg.train.lr, cfg.train.batch, cfg.seed)
-        X0 = proc.seeds(cfg.train.probe_n, d, cfg.seed + 7)
-        Xf = proc.sample(model, X0)
-        hall = float((core.label_fate(Xf, means_t, R99) == -1).float().mean())
-        if hall <= cfg.train.hall_target:
-            break
-        steps = int(steps * cfg.train.step_growth)
- 
+    path = ckpt_path(cfg.paths.data, sampler, d, K, seed)
     converged = hall <= cfg.train.hall_target
- 
     arch = {"h": core.ScoreNet.H, "nb": core.ScoreNet.NB, "td": core.ScoreNet.TD}
- 
     ckpt = {
         "state_dict": model.state_dict(),
         "sampler": sampler,
-        "d": d, "K": K, "T": T,
+        "d": d, "K": K, "T": T, "seed": seed,
         "means": means_t.cpu(),
-        "R99": R99, "sigma": sigma, "variance": variance,
+        "R99": R99, "sigma": sigma, "variance": sigma ** 2,
         "min_sep": min_sep,
         "hall_rate": hall,
         "converged": converged,
         "steps": used_steps,
-        "attempts": attempt + 1,
+        "attempts": attempts,
         "arch": arch,
     }
     if sampler == "flow":
         ckpt["flow"] = {"sigma_min": float(cfg.process.sigma_min),
                         "solver": str(cfg.process.solver)}
- 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(ckpt, path)
 
@@ -160,19 +141,80 @@ def train_one(cfg, d, K, device):
     # job loads it instead of re-running the N-seed forward pass. Same seeds evaluate will use.
     try:
         n_eval = int(cfg.eval.n_eval)
-        X_te = proc.seeds(n_eval, d, cfg.seed + 1)
+        X_te = proc.seeds(n_eval, d, seed + 1)
         gt = core.label_fate(proc.sample(model, X_te), means_t, R99)
-        save_gt_cache(cfg.paths.data, sampler, d, K, gt, n_eval, T, R99, cfg.seed)
+        save_gt_cache(cfg.paths.data, sampler, d, K, gt, n_eval, T, R99, seed)
     except Exception as e:
-        print(f"[train:{sampler}] gt cache skipped d={d} K={K}: {e}")
+        print(f"[train:{sampler}] gt cache skipped d={d} K={K} seed={seed}: {e}")
+    return path, converged
 
-    return {"d": d, "K": K, "path": path,
-            "status": "trained" if converged else "not_converged",
-            "hall_rate": hall, "converged": converged,
-            "steps": used_steps, "attempts": attempt + 1,
-            "secs": round(time.time() - t0, 1)}
- 
- 
+
+def train_cell(cfg, d, K, seeds, device):
+    """Train the (d, K) cell for every repeat in `seeds`; returns {seed: info}.
+
+    Each repeat is an independent draw of the whole experiment: its mode placement, model
+    init and probe seeds all derive from its seed. The repeats are trained TOGETHER in one
+    core.run_optimizers call (one CUDA graph, one branch per seed) since a single small model
+    cannot fill a GPU. The retry loop is per seed: after each attempt only the seeds still
+    above hall_target are retrained (from scratch, with step_growth x more steps). `secs` in
+    the returned info is the wall time of the whole cell (all seeds), not of one seed."""
+    sampler = cfg.process.name
+    T = cfg.process.T_train
+    variance = cfg.data.sigma ** 2
+    if cfg.train.max_attempts < 1:
+        raise ValueError("train.max_attempts must be >= 1")
+
+    out, cells = {}, {}
+    for seed in seeds:
+        path = ckpt_path(cfg.paths.data, sampler, d, K, seed)
+        if os.path.exists(path) and not cfg.train.force_retrain:
+            out[seed] = {"d": d, "K": K, "seed": seed, "path": path, "status": "cached"}
+            continue
+        try:
+            means_t, min_sep, R99 = _cell_geometry(cfg, d, K, seed, device)
+        except ModePlacementError as e:
+            out[seed] = {"d": d, "K": K, "seed": seed, "status": "skipped", "reason": str(e)}
+            continue
+        cells[seed] = {"means": means_t, "min_sep": min_sep, "R99": R99,
+                       "proc": make_process(sampler, means_t, variance, T, device, cfg)}
+
+    steps = int(cfg.train.base_steps * (1 + d / 16) * (1 + K / 16))
+    t0 = time.time()
+    pending = list(cells)                       # seeds still to (re)train
+    done = {}                                   # seed -> (model, hall, steps, attempts)
+    for attempt in range(cfg.train.max_attempts):
+        if not pending:
+            break
+        models, closures = [], []
+        for seed in pending:
+            m, c = cells[seed]["proc"].train_closure(K, d, cfg.train.batch, seed)
+            models.append(m); closures.append(c)
+        models = core.run_optimizers(models, closures, steps, cfg.train.lr,
+                                     **cells[pending[0]]["proc"].optim_kwargs())
+        still = []
+        for seed, model in zip(pending, models):
+            c = cells[seed]
+            X0 = c["proc"].seeds(cfg.train.probe_n, d, seed + 7)
+            Xf = c["proc"].sample(model, X0)
+            hall = float((core.label_fate(Xf, c["means"], c["R99"]) == -1).float().mean())
+            done[seed] = (model, hall, steps, attempt + 1)
+            if hall > cfg.train.hall_target:
+                still.append(seed)
+        pending = still
+        steps = int(steps * cfg.train.step_growth)
+
+    for seed, (model, hall, used_steps, attempts) in done.items():
+        c = cells[seed]
+        path, converged = _save_cell(cfg, d, K, seed, c["proc"], model, c["means"], c["min_sep"],
+                                     c["R99"], hall, used_steps, attempts)
+        out[seed] = {"d": d, "K": K, "seed": seed, "path": path,
+                     "status": "trained" if converged else "not_converged",
+                     "hall_rate": hall, "converged": converged,
+                     "steps": used_steps, "attempts": attempts,
+                     "secs": round(time.time() - t0, 1)}
+    return out
+
+
 def run(cfg):
     device = core.get_device(cfg.device)
     sampler = cfg.process.name
@@ -181,26 +223,38 @@ def run(cfg):
  
     manifest = {}
     n_bad = 0
+    seeds = core.seed_list(cfg)
     for d in cfg.sweep.d:
         for K in cfg.sweep.K:
-            try:
-                info = train_one(cfg, int(d), int(K), device)
-            except ModePlacementError as e:
-                info = {"d": int(d), "K": int(K), "status": "skipped", "reason": str(e)}
-            manifest[f"{d}_{K}"] = info
- 
-            status = info.get("status")
-            line = f"[train:{sampler}] d={d:>2} K={K:>2} -> {status}"
-            if status in ("trained", "not_converged"):
-                line += f" hall={info['hall_rate']:.4f} steps={info['steps']} {info['secs']}s"
-            if status == "not_converged":
-                line += f"  ** above hall_target={cfg.train.hall_target} **"
-                n_bad += 1
-            print(line)
- 
+            infos = train_cell(cfg, int(d), int(K), seeds, device)
+            for seed in seeds:
+                info = infos[seed]
+                manifest[f"{d}_{K}_s{seed}"] = info
+
+                status = info.get("status")
+                line = f"[train:{sampler}] d={d:>2} K={K:>2} seed={seed:<4} -> {status}"
+                if status in ("trained", "not_converged"):
+                    line += (f" hall={info['hall_rate']:.4f} steps={info['steps']} "
+                             f"attempts={info['attempts']} {info['secs']}s")
+                if status == "not_converged":
+                    line += f"  ** above hall_target={cfg.train.hall_target} **"
+                    n_bad += 1
+                print(line)
+
+    # one manifest per process, merged under a file lock so the concurrent per-cell jobs
+    # scripts/main.sh fans out do not overwrite each other's entries
     mpath = os.path.join(sampler_dir(cfg.paths.data, sampler), "manifest.json")
-    with open(mpath, "w") as f:
-        json.dump(manifest, f, indent=2)
+    with open(mpath, "a+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.seek(0)
+        try:
+            merged = json.load(f)
+        except Exception:
+            merged = {}
+        merged.update(manifest)
+        f.seek(0); f.truncate()
+        json.dump(merged, f, indent=2)
+        fcntl.flock(f, fcntl.LOCK_UN)
     print(f"[train:{sampler}] manifest written: {mpath}")
     if n_bad:
         print(f"[train:{sampler}] WARNING: {n_bad} cell(s) did not reach hall_target; "

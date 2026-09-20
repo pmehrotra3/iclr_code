@@ -1,5 +1,5 @@
 name: flow
-T_train: 150
+T_train: 500      # 150 was too coarse: at d>=32 even the EXACT score hallucinates (see README)
 T_true: 200
 sigma_min: 0.0001
 solver: euler         # learned-sampler ODE solver: euler | midpoint | heun | rk4

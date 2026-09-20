@@ -1,5 +1,5 @@
 name: ddim
-T_train: 150
+T_train: 500      # 150 was too coarse: at d>=32 even the EXACT score hallucinates (see README)
 T_true: 200
 beta_min: 1e-4
 beta_max: 0.02
