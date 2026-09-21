@@ -1,0 +1,165 @@
+======================================================================
+process:
+  T_train: 500
+  T_true: 200
+  name: ddim
+  beta_min: 0.0001
+  beta_max: 0.02
+  true_order: heun
+data:
+  mass_q: 0.99
+  weighted: false
+  name: gmm
+  sigma: 0.1
+  radius: 2.0
+  m_mult: 1.5
+sweep:
+  d:
+  - 2
+  - 4
+  - 8
+  - 16
+  - 32
+  - 64
+  K:
+  - 2
+  - 4
+  - 8
+  - 16
+  anchors:
+  - 20000
+  - 50000
+  - 100000
+train:
+  force_retrain: false
+  base_steps: 30000
+  lr: 0.001
+  lr_min: 1.0e-05
+  grad_clip: 1.0
+  ema_decay: 0.999
+  ema_warmup: 1000
+  batch: 512
+  n_train: 100000
+  cuda_graph: true
+  graph_streams: true
+  probe_n: 10000
+  hall_target: 0.015
+  step_growth: 1.7
+  max_attempts: 2
+eval:
+  n_eval_per_mode: 20000
+  n_eval: null
+anchors:
+  seed: 0
+  shell_frac: 0.5
+  shell_sigma: 2.0
+  n_calibrate: 5000
+  altered_knn:
+    n_rings: 5
+    r_max: 1.5
+    weight: linear
+    w_min: 0.2
+classifier:
+  _shared:
+    hidden: 256
+    depth: 4
+    degree: 3
+    epochs: 30
+    batch: 2048
+    lr: 0.003
+    weight_decay: 0.0001
+    min_steps: 3000
+    ensemble: 3
+    k: 10
+    bandwidth: 1.0
+    temperature: 0.1
+    threshold: auto
+    confidence: entropy
+  models:
+    knn:
+      name: knn
+      arch: knn
+    altered_knn:
+      name: altered_knn
+      arch: altered_knn
+    quadratic:
+      name: quadratic
+      arch: quadratic
+    polar8:
+      name: polar8
+      arch: polar
+      degree: 8
+stages:
+- evaluate
+- visualize
+device: cuda
+seed: 0
+n_seeds: 3
+run_id: 2026-09-20_18-19-21
+paths:
+  root: ${oc.env:ATLAS_ROOT,${oc.env:PWD}}
+  data: ${paths.root}/data
+  output: ${paths.root}/output
+
+======================================================================
+
+>>> STAGE: evaluate
+----------------------------------------
+[eval:ddim] d= 2 K= 2 seeds=3 hall_gt=0.010+-0.001 | knn: full=0.986+-0.008 modeF1=0.992+-0.004 hallF1=0.553+-0.125 @ 300000 anchors
+[eval:ddim] d= 2 K= 4 seeds=3 hall_gt=0.011+-0.001 | knn: full=0.901+-0.010 modeF1=0.907+-0.010 hallF1=0.336+-0.012 @ 600000 anchors
+[eval:ddim] d= 2 K= 8 seeds=3 hall_gt=0.012+-0.001 | knn: full=0.959+-0.006 modeF1=0.966+-0.005 hallF1=0.335+-0.022 @ 1200000 anchors
+[eval:ddim] d= 2 K=16 seed=0    -> no checkpoint, skipped
+[eval:ddim] d= 2 K=16 seed=100  -> no checkpoint, skipped
+[eval:ddim] d= 2 K=16 seed=200  -> no checkpoint, skipped
+[eval:ddim] d= 4 K= 2 seeds=3 hall_gt=0.009+-0.000 | knn: full=0.960+-0.005 modeF1=0.969+-0.002 hallF1=0.438+-0.051 @ 300000 anchors
+[eval:ddim] d= 4 K= 4 seeds=3 hall_gt=0.011+-0.000 | knn: full=0.898+-0.026 modeF1=0.904+-0.026 hallF1=0.364+-0.019 @ 600000 anchors
+[eval:ddim] d= 4 K= 8 seeds=3 hall_gt=0.011+-0.000 | knn: full=0.870+-0.028 modeF1=0.879+-0.028 hallF1=0.265+-0.028 @ 1200000 anchors
+[eval:ddim] d= 4 K=16 seeds=3 hall_gt=0.013+-0.001 | knn: full=0.886+-0.007 modeF1=0.898+-0.007 hallF1=0.237+-0.007 @ 2400000 anchors
+[eval:ddim] d= 8 K= 2 seeds=3 hall_gt=0.011+-0.001 | knn: full=0.887+-0.003 modeF1=0.893+-0.003 hallF1=0.451+-0.020 @ 300000 anchors
+[eval:ddim] d= 8 K= 4 seeds=3 hall_gt=0.011+-0.000 | knn: full=0.800+-0.005 modeF1=0.805+-0.005 hallF1=0.357+-0.014 @ 600000 anchors
+[eval:ddim] d= 8 K= 8 seeds=3 hall_gt=0.012+-0.000 | knn: full=0.733+-0.001 modeF1=0.741+-0.001 hallF1=0.241+-0.005 @ 1200000 anchors
+[eval:ddim] d= 8 K=16 seeds=3 hall_gt=0.013+-0.000 | knn: full=0.674+-0.001 modeF1=0.687+-0.001 hallF1=0.173+-0.003 @ 2400000 anchors
+[eval:ddim] d=16 K= 2 seeds=3 hall_gt=0.011+-0.000 | knn: full=0.838+-0.003 modeF1=0.842+-0.003 hallF1=0.118+-0.016 @ 300000 anchors
+[eval:ddim] d=16 K= 4 seeds=3 hall_gt=0.010+-0.000 | knn: full=0.713+-0.004 modeF1=0.717+-0.004 hallF1=0.138+-0.012 @ 600000 anchors
+[eval:ddim] d=16 K= 8 seeds=3 hall_gt=0.011+-0.000 | knn: full=0.599+-0.002 modeF1=0.604+-0.002 hallF1=0.142+-0.003 @ 1200000 anchors
+[eval:ddim] d=16 K=16 seeds=3 hall_gt=0.012+-0.000 | knn: full=0.506+-0.002 modeF1=0.512+-0.002 hallF1=0.117+-0.002 @ 2400000 anchors
+[eval:ddim] d=32 K= 2 seeds=3 hall_gt=0.010+-0.000 | knn: full=0.848+-0.003 modeF1=0.852+-0.003 hallF1=0.020+-0.006 @ 300000 anchors
+[eval:ddim] d=32 K= 4 seeds=3 hall_gt=0.010+-0.000 | knn: full=0.710+-0.006 modeF1=0.713+-0.006 hallF1=0.039+-0.008 @ 600000 anchors
+[eval:ddim] d=32 K= 8 seeds=3 hall_gt=0.011+-0.000 | knn: full=0.584+-0.004 modeF1=0.587+-0.005 hallF1=0.053+-0.001 @ 1200000 anchors
+[eval:ddim] d=32 K=16 seeds=3 hall_gt=0.012+-0.000 | knn: full=0.467+-0.001 modeF1=0.471+-0.001 hallF1=0.058+-0.003 @ 2400000 anchors
+[eval:ddim] d=64 K= 2 seeds=3 hall_gt=0.010+-0.001 | knn: full=0.864+-0.009 modeF1=0.869+-0.008 hallF1=0.001+-0.002 @ 300000 anchors
+[eval:ddim] d=64 K= 4 seeds=3 hall_gt=0.011+-0.001 | knn: full=0.743+-0.006 modeF1=0.747+-0.006 hallF1=0.012+-0.004 @ 600000 anchors
+[eval:ddim] d=64 K= 8 seeds=3 hall_gt=0.011+-0.001 | knn: full=0.627+-0.002 modeF1=0.631+-0.001 hallF1=0.025+-0.002 @ 1200000 anchors
+[eval:ddim] d=64 K=16 seeds=3 hall_gt=0.012+-0.000 | knn: full=0.511+-0.004 modeF1=0.515+-0.004 hallF1=0.032+-0.003 @ 2400000 anchors
+[eval:ddim] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/results.json, /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/results.csv (mean +- std over 3 seeds) and /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/results_per_seed.csv
+
+>>> STAGE: visualize
+----------------------------------------
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/table.tex
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/table.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/knn.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/altered_knn.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/quadratic.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/quadratic_cal.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/polar8.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/polar8_cal.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_20000/knn.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_20000/altered_knn.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_20000/quadratic.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_20000/quadratic_cal.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_20000/polar8.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_20000/polar8_cal.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_50000/knn.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_50000/altered_knn.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_50000/quadratic.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_50000/quadratic_cal.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_50000/polar8.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_50000/polar8_cal.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_100000/knn.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_100000/altered_knn.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_100000/quadratic.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_100000/quadratic_cal.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_100000/polar8.png
+[viz] wrote /home/pmehrotra3/iclr_code/output/2026-09-20_18-19-21/ddim/unweighted/T200/anchors_100000/polar8_cal.png
+
+All requested stages complete.
