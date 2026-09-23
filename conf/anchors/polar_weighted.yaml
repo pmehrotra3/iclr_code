@@ -1,0 +1,29 @@
+# anchors/polar_weighted - uniform concentric-sphere anchors with boundary-heavy weights;
+# builds on altered_knn (whose rings altered_knn keeps using)
+#
+# Per mode k and budget n (sweep.anchors, per mode): n_spheres spheres around mu_k at radii
+#   r_j = r_max * R99 * j / n_spheres,  j = 1..n_spheres        (uniform in radius)
+# with n_per_sphere points each (N_persphere x N_sphere = n per mode). Directions: farthest-
+# point sampling over fps_pool * n_per_sphere random unit vectors (maximal angular spread),
+# turned by a fresh random rotation per (mode, sphere). Spheres inside R99 are labelled k,
+# those past it -1 (hallucination). All anchors are backtracked to seed space as usual.
+# knn, quadratic and polar train on these; quadratic / polar minimise the weighted
+# cross-entropy sum_i w_i CE_i / sum_i w_i (knn ignores weights).
+
+defaults:
+  - altered_knn
+  - _self_
+
+strategy: polar_weighted
+
+polar_weighted:
+  n_spheres: 10        # N_sphere: concentric spheres per mode
+  n_per_sphere: null   # N_persphere: points per sphere; null = budget // n_spheres
+  r_max: 1.2           # outermost radius in units of R99 (> 1 puts outer spheres in the
+                       # hallucination region: 1.2 with 10 spheres -> radii 1.08, 1.2 are -1)
+  fps_pool: 4          # farthest-point candidates per sphere = fps_pool * n_per_sphere
+  weight: log_decay    # log_decay  : w = r / R99, the Gaussian log-density decay rate
+                       #              r / sigma^2 normalised to 1 at the boundary
+                       # inv_density: w = exp((r^2 - R99^2) / (2 sigma^2)), 1 / p(r) normalised
+                       # uniform    : w = 1
+  w_min: 0.1           # weight floor (the centre-most spheres)

@@ -2,8 +2,10 @@
 evaluate.py — Stage 2. The seed-fate atlas, run identically for every process (ddim, flow).
 
 Per (d, K) cell, per anchor budget:
-  1. Plant labelled anchors in DATA space (core.ball_anchors: mode balls + a hallucination
-     band; core.altered_knn_anchors: mode-only weighted rings). No model involved.
+  1. Plant labelled anchors in DATA space (anchors.strategy: polar_weighted ->
+     core.polar_weighted_anchors, concentric farthest-point spheres with boundary-heavy
+     weights; ball -> core.ball_anchors, mode balls + a hallucination band;
+     core.altered_knn_anchors: mode-only weighted rings for altered_knn). No model involved.
   2. Backtrack them to SEED space with the exact analytic field (proc.true_field_backtrack).
   3. Fit each predictor in classifier.models on the (seed, label) pairs -- knn, altered_knn,
      quadratic, polar3. altered_knn's confidence cut is calibrated on fresh seeds labelled by the
@@ -71,7 +73,7 @@ def anchor_memory_gb(cfg, d, K):
     a = cfg.anchors
     b = max(budgets(cfg))
     f = 4 * d                                          # bytes per fp32 point
-    n_ball = b * K * (1 + float(a.shell_frac))
+    n_ball = b * K * (1.0 if a.get("strategy", "ball") == "polar_weighted" else 1 + float(a.shell_frac))
     _models = cfg.classifier.models
     _entries = _models.values() if OmegaConf.is_dict(_models) else _models
     need_altered = any(_spec(cfg, m)["arch"] == "altered_knn" for m in _entries)
@@ -168,19 +170,26 @@ def eval_one(cfg, d, K, seed, device):
 
     rows = []
     for b in budgets(cfg):
+        # step 1 + 2: plant in data space, backtrack to seed space with the exact field
+        wb = None                                   # per-anchor weights (polar_weighted only)
+        if a.get("strategy", "ball") == "polar_weighted":
+            pw = a.polar_weighted
+            P, y, wb = core.polar_weighted_anchors(
+                means_t, R99, int(b), int(pw.n_spheres), pw.get("n_per_sphere", None),
+                float(pw.r_max), float(pw.fps_pool), str(pw.weight), float(pw.w_min),
+                sigma=sigma, seed=int(a.seed), device=device)
+        else:
+            P, y = core.ball_anchors(means_t, R99, int(b), float(a.shell_frac), float(a.shell_sigma),
+                                     sigma, int(a.seed), device)
+        A = proc_true.true_field_backtrack(P, inplace=True)   # P is overwritten: one (n, d) tensor, not two
+        del P
         # scored seeds: all n_eval, or (eval_per_anchor) a stratified subset of the pool sized
-        # per_anchor * (ball + shell anchors) -- the same subset for every predictor
+        # per_anchor * (anchors of this budget) -- the same subset for every predictor
         if per_anchor:
-            n_ball = K * (int(b) + max(1, int(round(float(a.shell_frac) * int(b)))))
-            sel = stratified_eval_idx(gt, K, int(round(float(per_anchor) * n_ball)), seed + 3)
+            sel = stratified_eval_idx(gt, K, int(round(float(per_anchor) * A.shape[0])), seed + 3)
             X_b, gt_b = X_te[sel], gt[sel]
         else:
             X_b, gt_b = X_te, gt
-        # step 1 + 2: plant in data space, backtrack to seed space with the exact field
-        P, y = core.ball_anchors(means_t, R99, int(b), float(a.shell_frac), float(a.shell_sigma),
-                                 sigma, int(a.seed), device)
-        A = proc_true.true_field_backtrack(P, inplace=True)   # P is overwritten: one (n, d) tensor, not two
-        del P
         Aa = ya = wa = None
         if need_altered:
             rg = a.altered_knn
@@ -194,7 +203,7 @@ def eval_one(cfg, d, K, seed, device):
             t0 = time.time()
             altered = spec["arch"] == "altered_knn"
             nets = (fate.train_ensemble(Aa, ya, K, spec, device, w=wa) if altered
-                    else fate.train_ensemble(A, y, K, spec, device))
+                    else fate.train_ensemble(A, y, K, spec, device, w=wb))
             if altered and spec.get("threshold") == "auto":
                 for net in nets:
                     net.calibrate(X_cal, y_cal)
@@ -207,7 +216,7 @@ def eval_one(cfg, d, K, seed, device):
                          "weights": w_row,
                          "secs": round(time.time() - t0, 1), **met})
             del nets
-        del A, Aa, X_b, gt_b                               # release this budget's anchors before the next (bigger) one
+        del A, Aa, X_b, gt_b, wb                               # release this budget's anchors before the next (bigger) one
         if device.type == "cuda":
             torch.cuda.empty_cache()
 

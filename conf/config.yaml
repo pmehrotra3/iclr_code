@@ -6,7 +6,7 @@ defaults:
   - sweep: base           # the (d, K, anchors) grid
   - train: base           # learned-model training
   - eval: base            # ground-truth evaluation
-  - anchors: altered_knn  # atlas anchors (builds on anchors/base.yaml)
+  - anchors: polar_weighted  # atlas anchors: polar_weighted (default) | altered_knn (old ball+shell)
   - classifier: base      # shared classifier defaults (_shared)
 
   # predictors to run: delete a line to skip that predictor

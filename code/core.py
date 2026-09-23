@@ -593,6 +593,11 @@ def forward_true(X0, means_t, abar_t, T, variance, chunk=50000, order="heun", we
 #                         knn / polar predictors.
 #   altered_knn_anchors : mode-only concentric spheres with radius-decaying weights (no
 #                         hallucination class), for the altered_knn predictor.
+#   polar_weighted_anchors : per mode, n_spheres concentric spheres at uniformly spaced radii
+#                         (inner ones labelled k, those past R99 -> -1), directions by farthest-
+#                         point sampling, each anchor weighted by the Gaussian's log-density
+#                         decay rate at its radius. Replaces ball_anchors when
+#                         anchors.strategy = polar_weighted.
 # Callers backtrack these to seed space with the exact field before fitting.
 # --------------------------------------------------------------------------------------
 @torch.no_grad()
@@ -622,6 +627,78 @@ def ball_anchors(means_t, R99, n_per_mode, shell_frac=0.5, shell_sigma=2.0, sigm
         dirs /= dirs.norm(dim=1, keepdim=True)
         torch.addcmul(means_t[k], r[:, None], dirs, out=P[s0 + n_per_mode:s0 + per_mode])
     return P, label_fate(P, means_t, R99)
+@torch.no_grad()
+def fps_directions(n, d, pool_factor=4, generator=None, device=None, min_pool=4096):
+    """n unit vectors in R^d spread as far apart as possible: greedy farthest-point sampling
+    over max(pool_factor * n, min_pool) random directions (each pick maximises its smallest
+    angle to the ones already chosen). On the circle this gives evenly spaced angles."""
+    m = max(n, int(pool_factor * n), int(min_pool))
+    C = torch.randn(m, d, generator=generator, device=device)
+    C /= C.norm(dim=1, keepdim=True)
+    chosen = torch.empty(n, dtype=torch.long, device=device)
+    chosen[0] = 0
+    maxcos = C @ C[0]                               # cosine to the nearest chosen direction
+    for i in range(1, n):
+        j = torch.argmin(maxcos)
+        chosen[i] = j
+        maxcos = torch.maximum(maxcos, C @ C[j])
+    return C[chosen]
+
+
+@torch.no_grad()
+def random_rotation(d, generator=None, device=None):
+    """Haar-random orthogonal d x d matrix (QR of a Gaussian matrix, signs fixed)."""
+    Q, R = torch.linalg.qr(torch.randn(d, d, generator=generator, device=device))
+    return Q * torch.sign(torch.diagonal(R))[None, :]
+
+
+def polar_weight(r, R99, sigma, kind="log_decay", w_min=0.1):
+    """Anchor weight at distance r from its mode centre (large near the boundary, small at
+    the centre):
+      log_decay   : the Gaussian's log-density decay rate -d log p / dr = r / sigma^2,
+                    normalised to 1 at R99  ->  w = r / R99
+      inv_density : inverse Gaussian density, normalised to 1 at R99
+                    ->  w = exp((r^2 - R99^2) / (2 sigma^2))
+      uniform     : w = 1
+    floored at w_min."""
+    if kind == "uniform":
+        return 1.0
+    if kind == "inv_density":
+        w = math.exp((r ** 2 - R99 ** 2) / (2 * sigma ** 2))
+    elif kind == "log_decay":
+        w = r / R99
+    else:
+        raise ValueError(f"unknown polar_weighted weight {kind!r}: log_decay | inv_density | uniform")
+    return max(float(w_min), float(w))
+
+
+@torch.no_grad()
+def polar_weighted_anchors(means_t, R99, n_per_mode, n_spheres=10, n_per_sphere=None, r_max=1.2,
+                           fps_pool=4, weight="log_decay", w_min=0.1, sigma=None, seed=0,
+                           device=None):
+    """Per mode k: n_spheres concentric spheres at radii r_j = r_max * R99 * j / n_spheres
+    (j = 1..n_spheres, uniform in radius), n_per_sphere points on each (default n_per_mode //
+    n_spheres). The directions are one farthest-point set, turned by a fresh random rotation
+    per (mode, sphere) so spheres do not share directions. Labels by the usual rule L (spheres
+    past R99 -> -1); weight polar_weight(r_j). Returns P (n, d), y (n,), w (n,)."""
+    K, d = means_t.shape
+    per_sphere = int(n_per_sphere) if n_per_sphere else max(1, int(n_per_mode) // int(n_spheres))
+    g = torch.Generator(device=device).manual_seed(seed)
+    D = fps_directions(per_sphere, d, fps_pool, g, device)
+    radii = [float(r_max) * R99 * j / n_spheres for j in range(1, n_spheres + 1)]
+    per_mode = n_spheres * per_sphere
+    P = torch.empty(K * per_mode, d, device=device)
+    w = torch.empty(K * per_mode, device=device)
+    for k in range(K):
+        for j, r in enumerate(radii):
+            s0 = k * per_mode + j * per_sphere
+            blk = P[s0:s0 + per_sphere]
+            torch.matmul(D, random_rotation(d, g, device), out=blk)
+            blk.mul_(r).add_(means_t[k])
+            w[s0:s0 + per_sphere] = polar_weight(r, R99, sigma, weight, w_min)
+    return P, label_fate(P, means_t, R99), w
+
+
 @torch.no_grad()
 def altered_knn_anchors(means_t, R99, n_per_mode, n_rings=5, r_max=1.5, weight="linear",
                         w_min=0.2, sigma=None, seed=0, device=None):
