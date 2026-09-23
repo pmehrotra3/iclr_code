@@ -1,29 +1,14 @@
-"""
-main.py — Hydra entry point.
+"""main.py — Hydra entry point: python code/main.py [overrides]
 
-A run is a NAME (run_id=abc123, the default); everything it produces -- checkpoints, gt caches,
-results, figures, logs -- lives in output/<run_id>/, and every invocation with that name adds to
-it and resumes where it stopped (code/runstate.py). Existing checkpoints / cell files are reused
-unless train.force_retrain / eval.force.
+Stages (stages=[...]): train -> evaluate -> visualize; merge rebuilds results.json from the
+cell files (scripts/main.sh evaluates per d, then merges once). Models go to checkpoints/,
+results to output/<run_id>/ (run_id is a NAME, default abc123); every invocation adds to them,
+skipping work already done (code/runstate.py checks the settings agree).
 
-Run the full pipeline:
-    python code/main.py run_id=abc123
-
-In pieces (same files as one invocation with sweep.d=[16,64] n_seeds=3):
-    python code/main.py run_id=abc123 sweep.d=[16]
-    python code/main.py run_id=abc123 sweep.d=[16,64]               # d=16 is skipped
-    python code/main.py run_id=abc123 sweep.d=[16,64] n_seeds=3     # only seeds 100, 200 are new
-    python code/main.py run_id=abc123 process.T_true=500            # adds another T
-
-Run a custom sweep:
-    python code/main.py sweep.d=[2,8,32] sweep.K=[8] sweep.anchors=[5000,50000,200000]
-
-Run only some stages:
-    python code/main.py stages=[evaluate,visualize]
-    python code/main.py stages=[visualize]          # just re-plot from output/results.json
-
-Other handy overrides:
-    python code/main.py device=cpu train.force_retrain=true process.T_true=200
+    python code/main.py                                    # the configured sweep
+    python code/main.py sweep.d=[16,64] n_seeds=3          # add cells / seeds to the run
+    python code/main.py process=flow process.T_true=500    # another process / exact-field T
+    python code/main.py stages=[visualize]                 # re-plot only
 """
 from __future__ import annotations
 import os

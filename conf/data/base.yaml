@@ -1,10 +1,8 @@
-# data/base - general dataset settings shared by every dataset
+# data/base - settings shared by every dataset
 
-mass_q: 0.99  # core mass fraction that defines R99
-# mixing weights over the K modes. false: uniform 1/K. true: per seed, w_k ~ U(0,1) i.i.d. then
-# w /= sum(w), so every repeat (seed) assigns a different random imbalance to the modes and the
-# mean +- std over seeds averages over those assignments. The training data, the learned model
-# and the exact reference process (true score / OT velocity) all use the same weights.
-# weighted and unweighted runs are separate experiments: data/<process>/<weighted|unweighted>/
-# and output/<run_id>/<process>/<weighted|unweighted>/
+mass_q: 0.99  # mass of a mode inside its R99 ball: the mode / hallucination boundary
+# mixing weights over the K modes. false: uniform 1/K. true: one random profile (U[0.3, 0.8],
+# normalised) that each repeat seed assigns to the modes by its own permutation. The training
+# data and the exact field use the same weights. The two variants are separate experiments:
+# output/<run_id>/{checkpoints/<process>/,<process>/}<weighted|unweighted>/
 weighted: false

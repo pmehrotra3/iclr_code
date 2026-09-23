@@ -1,70 +1,47 @@
-"""
-processes/ddim.py — variance-preserving diffusion with a deterministic DDIM sampler.
+"""processes/ddim.py — variance-preserving diffusion with the deterministic DDIM sampler.
 
-Time convention (this process, internal): index i = T-1 is the source (noise), i = 0 is
-data. eps-prediction network. The analytic reference field is the GMM score; the atlas
-backtrack integrates the true-score reverse ODE from data to noise.
+Index i = T-1 is noise, i = 0 is data. The network predicts the added noise (eps); the exact
+field is the closed-form GMM score (core.true_score), integrated with Heun steps by default.
 """
 from __future__ import annotations
-import math
+
 import torch
-import torch.nn as nn
 
 import core
 from processes.base import Process
 
 
-
 class DDIMProcess(Process):
     name = "ddim"
 
-    def __init__(self, means_t, variance, T, device, cfg=None, weights=None):
+    def __init__(self, means_t, variance, T, device, cfg, weights=None):
         super().__init__(means_t, variance, T, device, cfg, weights)
-        proc = getattr(cfg, "process", None) if cfg is not None else None
-        beta_min = float(getattr(proc, "beta_min", 1e-4)) if proc is not None else 1e-4
-        beta_max = float(getattr(proc, "beta_max", 0.02)) if proc is not None else 0.02
-        self.abar = core.make_schedule(T, beta_min, beta_max, device=device)
-        # second-order (Heun) exact-score backtrack by default; 'euler' recovers first order.
-        self.true_order = str(getattr(proc, "true_order", "heun")) if proc is not None else "heun"
-
-    def build_model(self, d):
-        return core.ScoreNet(d, **self.arch(d)).to(self.device)
+        p = cfg.process
+        self.abar = core.make_schedule(T, float(p.beta_min), float(p.beta_max), device=device)
+        self.true_order = str(p.true_order)                     # exact-field integrator: heun | euler
 
     def train_closure(self, K, d, batch, seed):
         return core.learned_closure(self.means_t, d, K, self.abar, self.T, self.variance,
                                     batch, seed, self.device, n_train=self.n_train(),
                                     weights=self.weights, arch=self.arch(d))
 
-    def train_model(self, K, d, n_steps, lr, batch, seed):
-        model, step = self.train_closure(K, d, batch, seed)
-        return core.run_optimizer(model, step, n_steps, lr, **self.optim_kwargs())
-
     @torch.no_grad()
     def sample(self, model, X0, chunk=50000):
         model.eval()
         X = X0.clone()
         for i in reversed(range(1, self.T)):
-            ab, abp = self.abar[i], self.abar[i - 1]
             for s in range(0, X.shape[0], chunk):
                 xs = X[s:s + chunk]
-                ti = torch.full((xs.shape[0],), i, dtype=torch.long, device=self.device)
-                eps = model(xs, ti)
-                x0 = (xs - torch.sqrt(1 - ab) * eps) / torch.sqrt(ab)
-                X[s:s + chunk] = torch.sqrt(abp) * x0 + torch.sqrt(1 - abp) * eps
+                eps = model(xs, torch.full((xs.shape[0],), i, dtype=torch.long, device=self.device))
+                X[s:s + chunk] = core._ddim_step(xs, eps, self.abar[i], self.abar[i - 1])
         return X
 
     @torch.no_grad()
-    def true_field_backtrack(self, Pd, chunk=50000, inplace=False):
-        # reuse the shared true-score backtrack (data -> noise), Heun 2nd-order by default
-        return core.backtrack_true(
-            Pd, self.means_t, self.abar, self.T, self.variance, chunk=chunk, order=self.true_order,
-            weights=self.weights, inplace=inplace,
-        )
+    def true_field_forward(self, X0, chunk=50000):
+        return core.forward_true(X0, self.means_t, self.abar, self.T, self.variance, chunk=chunk,
+                                 order=self.true_order, weights=self.weights)
 
     @torch.no_grad()
-    def true_field_forward(self, X0, chunk=50000):
-        # exact-score DDIM forward (noise -> data), inverse of true_field_backtrack
-        return core.forward_true(
-            X0, self.means_t, self.abar, self.T, self.variance, chunk=chunk, order=self.true_order,
-            weights=self.weights,
-        )
+    def true_field_backtrack(self, Pd, chunk=50000, inplace=False):
+        return core.backtrack_true(Pd, self.means_t, self.abar, self.T, self.variance, chunk=chunk,
+                                   order=self.true_order, weights=self.weights, inplace=inplace)

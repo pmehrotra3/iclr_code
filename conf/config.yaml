@@ -2,7 +2,7 @@
 
 defaults:
   - process: ddim         # generative process: ddim | flow
-  - data: gmm             # dataset / manifold: gmm | mnist
+  - data: gmm             # dataset: Gaussian mixture on a sphere
   - sweep: base           # the (d, K, anchors) grid
   - train: base           # learned-model training
   - eval: base            # ground-truth evaluation
@@ -26,7 +26,7 @@ seed: 0                               # base RNG seed
 # independent repeats: seeds seed, seed+100, ... (each re-randomises the mode placement on the
 # sphere, the model init and the eval seeds); every metric is reported as mean +- std over them
 n_seeds: 3
-# the NAME of the run: everything it produces, checkpoints included, lives in output/<run_id>/.
+# the NAME of the run: its results live in output/<run_id>/ (models in checkpoints/).
 # Invocations with the same run_id add to the same run and resume where it stopped -- small
 # pieces or one big invocation give the same files (see code/runstate.py).
 run_id: abc123
@@ -34,8 +34,8 @@ strict_run: true                      # refuse to add to a run made with differe
 
 paths:
   root: ${oc.env:ATLAS_ROOT,${oc.env:PWD}}  # repo root
-  output: ${paths.root}/output              # output/<run_id>/{checkpoints/, <process>/, logs/}
-  checkpoints: ${paths.output}/${run_id}/checkpoints  # trained models + gt caches, per run
+  checkpoints: ${paths.root}/checkpoints    # trained models + gt caches: <process>/<variant>/
+  output: ${paths.root}/output              # results: output/<run_id>/<process>/<variant>/T<T>/
 
 hydra:
   run:

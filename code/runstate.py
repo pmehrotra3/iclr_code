@@ -1,27 +1,15 @@
-"""runstate.py — one named run = one folder, built up by as many invocations as you like.
+"""runstate.py — a run is a name, and every invocation under that name must agree on settings.
 
-`run_id` is a NAME you pick (`run_id=abc123`), not a timestamp. Everything the run produces
-lives under output/<run_id>/: checkpoints/<process>/<variant>/ (learned samplers, gt caches,
-manifest), <process>/<variant>/T<T>/ (per-cell result files, results.json, figures) and logs/
-(scripts/main.sh). Every stage skips work whose checkpoint / cell file already exists, so
-re-running with the same run_id resumes where it stopped, and a sweep split over several
-small invocations (other d, more seeds, more anchor budgets, another T_true, another predictor,
-the other data.weighted variant) ends up with exactly the files one big invocation would have
-written.
+`run_id` (e.g. abc123) names a run. Its results live in output/<run_id>/ and its models in
+checkpoints/. Every stage skips work that is already done, so a sweep can be built up over many
+invocations (more d, more seeds, another anchor budget, another T_true, the weighted variant, a
+new predictor) and ends with the same files as one big invocation.
 
-That only holds if every invocation uses the same experiment settings. So the first invocation
-records them in output/<run_id>/run.json, and every later one is checked against it:
-
-  may differ between invocations (they select WHICH cells / rows to compute):
-      stages, device, seed, n_seeds, sweep.* (d, K, anchors), process name + T_true,
-      data.weighted (the variant), the predictor LIST (new predictors are added), eval.part,
-      eval.force, *.force_retrain, train.graph_streams
-  must match (they change WHAT a cell computes):
-      everything else -- data contract, train recipe, process schedule, eval sizes, anchors,
-      and each predictor's own hyper-parameters
-
-A mismatch stops the invocation with the list of differences. Pick a new run_id for a
-different experiment, or pass strict_run=false to override on purpose.
+That only holds if the invocations compute each cell the same way. The first one writes its
+settings to output/<run_id>/run.json; later ones are compared against it and refused if
+anything that changes a result differs (the training recipe, the eval size, a predictor's
+hyper-parameters, ...). Settings that only choose WHICH cells to compute may differ: see
+_SELECT and _DROP below. Pass strict_run=false to mix settings on purpose.
 """
 from __future__ import annotations
 import fcntl
@@ -31,90 +19,87 @@ import time
 
 from omegaconf import OmegaConf
 
-# top-level keys that only select work, never change a result
+# top-level keys that only choose what to compute (plus data.weighted, the variant)
 _SELECT = {"stages", "run_id", "device", "seed", "n_seeds", "sweep", "paths", "strict_run", "hydra"}
-# keys dropped wherever they appear (paths and per-invocation switches)
-_DROP_ANY = {"root", "force_retrain", "force", "graph_streams", "part"}
+# per-invocation switches, ignored wherever they appear
+_DROP = {"root", "force_retrain", "force", "graph_streams", "part"}
 
 
-def run_dir(cfg) -> str:
+def run_dir(cfg):
     return os.path.join(cfg.paths.output, str(cfg.run_id))
 
 
 def _strip(x):
-    if isinstance(x, dict):
-        return {k: _strip(v) for k, v in x.items() if k not in _DROP_ANY}
-    return x
+    return {k: _strip(v) for k, v in x.items() if k not in _DROP} if isinstance(x, dict) else x
 
 
-def identity(cfg) -> dict:
-    """The settings that must agree across every invocation of one run (see module doc)."""
+def identity(cfg):
+    """The settings every invocation of a run must share, split into config / process /
+    predictors so a new process or predictor can be added to a run later."""
     c = OmegaConf.to_container(cfg, resolve=True)
-    proc = _strip(dict(c.get("process", {})))
+    proc = _strip(c["process"])
     proc.pop("T_true", None)
-    pred = dict(c.get("classifier", {}))
-    shared = pred.get("_shared", {}) or {}
-    models = pred.get("models", {}) or {}
-    ident = {k: _strip(v) for k, v in c.items() if k not in _SELECT | {"process", "classifier"}}
-    ident.get("data", {}).pop("weighted", None)          # the variant: selects, never changes
-    return {"config": ident,
-            "process": {str(proc.get("name")): proc},
-            "predictors": {n: {**shared, **(m or {})} for n, m in models.items()}}
+    shared = c["classifier"].get("_shared") or {}
+    config = {k: _strip(v) for k, v in c.items() if k not in _SELECT | {"process", "classifier"}}
+    config["data"].pop("weighted", None)
+    return {"config": config,
+            "process": {proc["name"]: proc},
+            "predictors": {n: {**shared, **(m or {})} for n, m in c["classifier"]["models"].items()}}
 
 
 def _diff(old, new, path=""):
-    """Leaves present in both with different values (keys only one side has are not a diff)."""
+    """[(path, old, new)] for values both sides have that differ; a key only one side has
+    (a new predictor, a setting added to the config later) is not a difference."""
     if isinstance(old, dict) and isinstance(new, dict):
-        out = []
-        for k in old.keys() & new.keys():
-            out += _diff(old[k], new[k], f"{path}.{k}" if path else str(k))
-        return out
+        return [x for k in old.keys() & new.keys() for x in _diff(old[k], new[k], f"{path}.{k}" if path else k)]
     return [] if old == new else [(path, old, new)]
 
 
 def _merge(old, new):
+    """`old` plus whatever only `new` has (new processes / predictors)."""
     if isinstance(old, dict) and isinstance(new, dict):
-        out = dict(old)
-        for k, v in new.items():
-            out[k] = _merge(old[k], v) if k in old else v
-        return out
+        return {**{k: _merge(v, new[k]) if k in new else v for k, v in old.items()},
+                **{k: v for k, v in new.items() if k not in old}}
     return old
 
 
-def check_and_record(cfg, overrides=()) -> str:
-    """Check this invocation against output/<run_id>/run.json (creating it on the first one),
-    add any new process / predictor to it, and log the invocation. Returns the run folder."""
+def settings_diff(old, new):
+    """Differences between two run.json records, as (section.path, old, new)."""
+    return [(f"{name}.{p}" if p else name, a, b)
+            for name, key in (("config", "config"), ("process", "process"), ("predictor", "predictors"))
+            for p, a, b in _diff(old[key], new[key])]
+
+
+def check_and_record(cfg, overrides=()):
+    """Compare this invocation with output/<run_id>/run.json (the first invocation creates it),
+    record any new process / predictor, and log the invocation. Returns the run folder."""
     rd = run_dir(cfg)
     os.makedirs(rd, exist_ok=True)
     new = identity(cfg)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
     with open(os.path.join(rd, "run.json"), "a+") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)                  # parallel jobs of scripts/main.sh
+        fcntl.flock(f, fcntl.LOCK_EX)                  # scripts/main.sh starts jobs in parallel
         f.seek(0)
-        txt = f.read()
-        old = json.loads(txt) if txt.strip() else None
-        if old is not None:
-            diffs = [(("config." + p) if p else "config", a, b) for p, a, b in _diff(old["config"], new["config"])]
-            diffs += [("process." + p, a, b) for p, a, b in _diff(old["process"], new["process"])]
-            diffs += [("predictor." + p, a, b) for p, a, b in _diff(old["predictors"], new["predictors"])]
-            if diffs and bool(cfg.get("strict_run", True)):
+        text = f.read()
+        if text.strip():
+            old = json.loads(text)
+            diffs = settings_diff(old, new)
+            if diffs and cfg.strict_run:
                 fcntl.flock(f, fcntl.LOCK_UN)
                 lines = "\n".join(f"    {p}: run has {a!r}, this invocation {b!r}" for p, a, b in diffs)
-                raise ValueError(
-                    f"run '{cfg.run_id}' was made with different settings ({rd}/run.json):\n{lines}\n"
-                    f"  -> use a new run_id for a different experiment, or strict_run=false to mix anyway")
-            merged = {**_merge(old, new), "created": old.get("created")}
+                raise ValueError(f"run '{cfg.run_id}' was made with different settings ({rd}/run.json):\n"
+                                 f"{lines}\n  -> use a new run_id, or strict_run=false to mix on purpose")
+            record = {**_merge(old, new), "created": old.get("created"), "updated": now}
         else:
-            merged = {**new, "created": time.strftime("%Y-%m-%d %H:%M:%S")}
-        merged["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            record = {**new, "created": now, "updated": now}
         f.seek(0); f.truncate()
-        json.dump(merged, f, indent=2)
+        json.dump(record, f, indent=2)
         fcntl.flock(f, fcntl.LOCK_UN)
 
-    # the invocation log: one line per invocation, plus its resolved config
+    # keep the full resolved config of every invocation, and a one-line history
     stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-    stages = "_".join(cfg.stages)
     os.makedirs(os.path.join(rd, "invocations"), exist_ok=True)
-    with open(os.path.join(rd, "invocations", f"{stamp}_{os.getpid()}_{stages}.yaml"), "w") as f:
+    with open(os.path.join(rd, "invocations", f"{stamp}_{os.getpid()}_{'_'.join(cfg.stages)}.yaml"), "w") as f:
         f.write(OmegaConf.to_yaml(cfg, resolve=True))
     with open(os.path.join(rd, "history.log"), "a") as f:
         f.write(f"{stamp}  pid={os.getpid()}  stages=[{','.join(cfg.stages)}]  {' '.join(overrides)}\n")

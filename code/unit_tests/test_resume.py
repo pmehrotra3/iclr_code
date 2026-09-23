@@ -58,9 +58,57 @@ class TestResume(unittest.TestCase):
             _same_weights(self, train.ckpt_path(one.paths.checkpoints, "ddim", 2, 2, seed),
                           train.ckpt_path(parts.paths.checkpoints, "ddim", 2, 2, seed), f"seed {seed}")
         # everything lives in the named run folder
-        rd = os.path.join(root, "output", "abc123")
-        self.assertTrue(os.path.isdir(os.path.join(rd, "checkpoints", "ddim", "unweighted", "checkpoints")))
-        self.assertEqual(len(open(os.path.join(rd, "history.log")).readlines()), 3)
+        self.assertTrue(os.path.isdir(os.path.join(root, "checkpoints", "ddim", "unweighted", "checkpoints")))
+        self.assertEqual(len(open(os.path.join(root, "output", "abc123", "history.log")).readlines()), 3)
+
+    def test_two_machines_combine_to_one_run(self):
+        """d=2 on machine A, d=4 on machine B (plus the d=2 cell at another budget on B):
+        combine.py gives the results.json of one invocation with both."""
+        import combine, train
+        one = tiny_cfg(tempfile.mkdtemp(prefix="iclr_one2_"), run_id="abc123",
+                       **{"sweep.d": "[2,4]", "sweep.anchors": "[30,50]"})
+        _run(one)
+        a = tiny_cfg(tempfile.mkdtemp(prefix="iclr_A_"), run_id="abc123", **{"sweep.anchors": "[30]"})
+        _run(a)
+        broot = tempfile.mkdtemp(prefix="iclr_B_")
+        _run(tiny_cfg(broot, run_id="abc123", **{"sweep.d": "[4]", "sweep.anchors": "[30,50]"}))
+        _run(tiny_cfg(broot, run_id="abc123", **{"sweep.anchors": "[50]"}))     # d=2 budget 50
+        combine.combine(broot, a.paths.root, "abc123")
+        combine.rebuild(a.paths.root, "abc123")
+        self.assertEqual(_results(one), _results(a))
+        _same_weights(self, train.ckpt_path(one.paths.checkpoints, "ddim", 4, 2, 0),
+                      train.ckpt_path(a.paths.checkpoints, "ddim", 4, 2, 0), "d=4 from B")
+
+    def test_combine_conflict_keeps_one_model(self):
+        """The same cell trained on both sides with different weights: this side's model and
+        rows are kept, nothing the other side derived from its model comes over."""
+        import combine, evaluate, train
+        a = tiny_cfg(tempfile.mkdtemp(prefix="iclr_cA_"), run_id="abc123")
+        _run(a)
+        broot = tempfile.mkdtemp(prefix="iclr_cB_")
+        b = tiny_cfg(broot, run_id="abc123", **{"sweep.anchors": "[50]"})
+        _run(b)
+        pb = train.ckpt_path(b.paths.checkpoints, "ddim", 2, 2, 0)          # "retrained" elsewhere
+        ck = torch.load(pb, map_location="cpu", weights_only=False)
+        k = next(iter(ck["state_dict"]))
+        ck["state_dict"][k] = ck["state_dict"][k] + 1.0
+        torch.save(ck, pb)
+        pa = train.ckpt_path(a.paths.checkpoints, "ddim", 2, 2, 0)
+        before = open(pa, "rb").read()
+        combine.combine(broot, a.paths.root, "abc123")
+        self.assertEqual(open(pa, "rb").read(), before)
+        cell = evaluate.cell_path(train.sweep_dir(a.paths.output, "abc123", "ddim", 20), 2, 2, 0)
+        self.assertEqual({int(r["n_per_mode"]) for r in json.load(open(cell))["rows"]}, {30})
+
+    def test_combine_refuses_other_settings(self):
+        import combine
+        a = tiny_cfg(tempfile.mkdtemp(prefix="iclr_sA_"), run_id="abc123")
+        import runstate
+        runstate.check_and_record(a)
+        broot = tempfile.mkdtemp(prefix="iclr_sB_")
+        runstate.check_and_record(tiny_cfg(broot, run_id="abc123", **{"train.base_steps": 151}))
+        with self.assertRaises(ValueError):
+            combine.combine(broot, a.paths.root, "abc123")
 
     def test_changed_settings_refused(self):
         import runstate

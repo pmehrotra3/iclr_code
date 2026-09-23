@@ -1,4 +1,4 @@
 # classifier/quadratic - quadratic-boundary predictor spec
 
 name: quadratic  # predictor family
-arch: quadratic  # implementation: quadratic boundary in (dir, radius)
+arch: quadratic  # implementation: linear classifier on (x, all products x_i x_j)

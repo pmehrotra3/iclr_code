@@ -1,45 +1,22 @@
 #!/usr/bin/env bash
-# scripts/main.sh — GPU-parallel sweep, driven ENTIRELY by command-line overrides.
-# conf/ is never modified; everything below is passed to code/main.py as Hydra overrides.
+# scripts/main.sh — the whole sweep, spread over every GPU. Everything is passed to
+# code/main.py as Hydra overrides; conf/ is never edited.
 #
-#   d        : dimensions       (DIMS)    -> sweep.d   (opt recipe: d=2 only)
-#   K        : mode counts      (KS)      -> sweep.K
-#   T        : exact-score steps (TS)     -> process.T_true   ({100,200,500})
-#   T_train  : learned steps     (TTRAIN) -> process.T_train  (150)
-#   anchors  : per-mode budgets  (ANCHORS)-> sweep.anchors    ({20k,50k,100k})
-#   seeds    : repeats           (NSEEDS) -> n_seeds  (base SEED; seeds SEED, SEED+100, ...)
-#              every metric is reported as mean +- std over them
+# Three phases, each fanned out over all GPUs (a failed job is retried RETRIES times):
+#   1) train     one job per (process, variant, d, K) cell; its NSEEDS seeds train together
+#                -> checkpoints/<process>/<variant>/
+#   2) evaluate  one job per (process, variant, T_true, d), several per GPU (each is small)
+#                -> output/$RUN/<process>/<variant>/T<T>/cells/
+#   3) merge     one job per (process, variant, T_true): results.json + figures from all cells
 #
-# RUN names the run (default abc123). Everything lands in output/$RUN/ -- checkpoints/,
-# <process>/<variant>/T<T>/, logs/, run.json, history.log -- and re-running with the same RUN
-# resumes it: finished checkpoints and evaluation rows are skipped, so a sweep done in several
-# pieces (DIMS="16", then DIMS="32", then NSEEDS=5 ...) ends in the same files as one
-# invocation. See code/runstate.py.
+# RUN names the run (default abc123). Re-running with the same RUN skips finished models and
+# result rows, so the sweep can be done in pieces (DIMS="16", later DIMS="32", ...) and ends
+# with the same files. Which predictors run is set in conf/config.yaml.
 #
-# Three phases, each fanned out across ALL GPUs (never one-process-per-GPU):
-#   1) TRAIN    : ONE job per (process, d, K) cell, training all NSEEDS repeats of the cell at
-#                 once (one CUDA graph, one branch per seed -- a single small model cannot fill
-#                 a GPU) -> output/$RUN/checkpoints/<process>/<variant>/checkpoints/ + gt_cache/
-#                 (each seed has its own RNG, so grouping does not change the models)
-#   2) EVAL     : one job per (process, variant, T, d), reusing the cached checkpoints AND
-#                 ground truth for every seed. Each job writes its cell files
-#                 (output/$RUN/<process>/<variant>/T<T>/cells/); EVAL_JOBS_PER_GPU of them share
-#                 a GPU (a single eval job is launch-bound, so several per GPU overlap).
-#   3) MERGE+VIZ: one light job per (process, variant, T) rebuilds results.json from EVERY cell
-#                 file of the run (mean +- std aggregate) and draws the figures.
-# NGPU * JOBS_PER_GPU jobs run at a time, each pinned to one GPU via CUDA_VISIBLE_DEVICES; a
-# failed job is re-run RETRIES times before it is reported.
-#
-#   data     : dataset group    (DATASET) -> data=<name>        (gmm | mnist)
-#   weighted : mixing weights   (WEIGHTED)-> data.weighted     ("false true" = both experiments;
-#              separate checkpoints/caches/results under <process>/<unweighted|weighted>/)
-#   predictors to run are set in conf/config.yaml (not here)
-#
-#   ./scripts/main.sh                           # everything under run abc123 (resumes it)
-#   RUN=foo ./scripts/main.sh                   # a different run (RUN_ID= also accepted)
-#   DIMS="512" ./scripts/main.sh                # later: add d=512 to the same run (the rest is not redone)
-#   TRAIN_ONLY=true ./scripts/main.sh           # phase 1 only (train every cell)
-#   SKIP_TRAIN=true ./scripts/main.sh           # phases 2-3 only, on the existing checkpoints
+#   ./scripts/main.sh                                # the full grid
+#   DIMS="512" KS="2 4 8 16" PROCESSES=ddim ./scripts/main.sh
+#   TRAIN_ONLY=true ./scripts/main.sh                # phase 1 only
+#   SKIP_TRAIN=true ./scripts/main.sh                # phases 2-3 on the existing models
 #   DEVICE=cpu NGPU=2 DIMS="2" KS="2 4" TS="200" ANCHORS="[2000,10000]" ./scripts/main.sh
 
 set -o pipefail
@@ -159,7 +136,7 @@ run_pool "$JOBS_PER_GPU"
 fi
 if [ "$TRAIN_ONLY" = true ]; then
   echo "=============================================================="
-  echo " TRAIN_ONLY: phase 1 done -> output/$RUN/checkpoints/<process>/<variant>/checkpoints/"
+  echo " TRAIN_ONLY: phase 1 done -> checkpoints/<process>/<variant>/checkpoints/"
   echo "=============================================================="
   exit 0
 fi

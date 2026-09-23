@@ -1,114 +1,69 @@
-"""
-processes/base.py — the interface every generative process implements.
+"""processes/base.py — what a generative process (DDIM, flow matching) has to provide.
 
-train.py and evaluate.py talk only to this contract, so adding a new sampler is a
-matter of dropping in another module that subclasses Process. Each process owns its
-own time convention internally and exposes a uniform API:
+train.py and evaluate.py only talk to these methods, so adding a process means writing one
+more subclass:
 
-    train_closure(...)      -> (fresh torch.nn.Module, per-step loss closure); train.py groups
-                               the closures of a cell's seeds into one core.run_optimizers call
-    train_model(...)        -> a trained torch.nn.Module (train_closure + core.run_optimizer)
-    sample(model, X0)       -> endpoints (data-space) from seeds X0
-    seeds(N, d)             -> initial noise ~ N(0, I)
-    true_field_backtrack(P) -> carry data-space points P back to seed space using the
-                               ANALYTIC (population) field of the reference GMM
+    train_closure   a fresh model and the function that computes one training step's loss
+    sample          where the learned model sends a batch of seeds
+    true_field_*    the same journey under the exact field, forwards (seed to data) or
+                    backwards (data to seed)
+    seeds           standard normal seeds, reproducible from an integer
 
-The reference field is the score for diffusion and the OT velocity for flow matching;
-both are known in closed form for a Gaussian mixture, which is what the atlas needs.
+The exact field (the score for diffusion, the OT velocity for flow matching) has a closed form
+for a Gaussian mixture, and that is what makes the atlas possible.
 """
 from __future__ import annotations
 from abc import ABC, abstractmethod
+
 import torch
 
 import core
 
 
 class Process(ABC):
-    name: str = "base"
+    name = "base"
 
-    def __init__(self, means_t, variance, T, device, cfg=None, weights=None):
-        self.means_t = means_t          # (K, d)
-        self.variance = variance        # within-mode variance sigma0^2
-        self.T = T                      # number of steps
-        self.device = device
-        self.cfg = cfg
+    def __init__(self, means_t, variance, T, device, cfg, weights=None):
+        self.means_t, self.variance, self.T = means_t, variance, T    # (K, d), sigma^2, steps
+        self.device, self.cfg = device, cfg
         self.K, self.d = means_t.shape
-        # mixing weights (K,) over the modes; None = uniform. Used by the training data AND
-        # the exact reference process so both describe the same (weighted) GMM.
+        # mixing weights (None = uniform), shared by the training data and the exact field
         self.weights = None if weights is None else weights.to(device)
         self.logw = core.log_weights(self.weights, device)
 
-    # ---- seeds ----
     def seeds(self, N, d, seed):
         g = torch.Generator(device=self.device).manual_seed(seed)
         return torch.randn(N, d, generator=g, device=self.device)
 
-    # ---- learned model ----
     def arch(self, d):
-        """ScoreNet kwargs for this d (width scales with d via cfg.train, see core.net_arch)."""
+        """ScoreNet kwargs for dimension d (see core.net_arch)."""
         return core.net_arch(d, self.cfg)
 
-    @abstractmethod
-    def train_closure(self, K, d, batch, seed):
-        """Return (untrained model, loss_closure) for one training run seeded by `seed`."""
-        ...
-
-    @abstractmethod
-    def train_model(self, K, d, n_steps, lr, batch, seed):
-        ...
-
     def n_train(self):
-        """cfg.train.n_train: size of the fixed training set drawn per (d, K, seed); None/0 =
-        fresh samples every step (infinite data)."""
-        t = getattr(self.cfg, "train", None) if self.cfg is not None else None
-        v = getattr(t, "n_train", None) if t is not None else None
-        return int(v) if v else None
+        """Size of the fixed training set per (d, K, seed); None = fresh draws every step."""
+        return int(self.cfg.train.n_train) if self.cfg.train.n_train else None
 
     def optim_kwargs(self):
-        """The shared optimiser recipe from cfg.train (cosine lr, grad clip, EMA, CUDA graph),
-        as keyword arguments for core.run_optimizer / core.run_optimizers."""
-        t = getattr(self.cfg, "train", None) if self.cfg is not None else None
+        """The training recipe of cfg.train as keyword arguments of core.run_optimizers."""
+        t = self.cfg.train
+        return dict(lr_min=t.lr_min, grad_clip=t.grad_clip, ema_decay=t.ema_decay,
+                    ema_warmup=int(t.ema_warmup or 0), cuda_graph=bool(t.cuda_graph),
+                    branch_streams=bool(t.graph_streams))
 
-        def get(key, default):
-            v = getattr(t, key, default) if t is not None else default
-            return default if v is None else v
-
-        return dict(lr_min=get("lr_min", None), grad_clip=get("grad_clip", None),
-                    ema_decay=get("ema_decay", None), ema_warmup=int(get("ema_warmup", 0) or 0),
-                    cuda_graph=bool(get("cuda_graph", True)),
-                    branch_streams=bool(get("graph_streams", True)))
-
-    @abstractmethod
-    def build_model(self, d):
-        """Return an untrained network with the right head for this process."""
-        ...
-
-    @torch.no_grad()
-    @abstractmethod
-    def sample(self, model, X0, chunk=50000):
-        """Map seeds X0 -> data-space endpoints with the LEARNED model."""
-        ...
-
-    # ---- analytic reference field + atlas backtrack ----
-    @torch.no_grad()
-    @abstractmethod
-    def true_field_backtrack(self, Pd, chunk=50000, inplace=False):
-        """Carry data-space points Pd back to seed space via the analytic field. inplace=True
-        overwrites Pd (the caller keeps only the seed-space result) instead of cloning it."""
-        ...
-
-    @torch.no_grad()
-    @abstractmethod
-    def true_field_forward(self, X0, chunk=50000):
-        """Carry seeds X0 forward to data space via the analytic field (the inverse of
-        true_field_backtrack). No learned model involved."""
-        ...
-
-    # ---- fate labels ----
     @torch.no_grad()
     def label(self, model, X0, R99, chunk=50000):
-        """Fate labels of seeds X0: under the LEARNED model, or the exact analytic field when
-        model is None (the exact-score reference used to calibrate predictors)."""
-        import core
+        """Fates of seeds X0 under the learned model, or under the exact field if model is None."""
         Xf = self.true_field_forward(X0, chunk) if model is None else self.sample(model, X0, chunk)
         return core.label_fate(Xf, self.means_t, R99)
+
+    @abstractmethod
+    def train_closure(self, K, d, batch, seed): ...
+
+    @abstractmethod
+    def sample(self, model, X0, chunk=50000): ...
+
+    @abstractmethod
+    def true_field_forward(self, X0, chunk=50000): ...
+
+    @abstractmethod
+    def true_field_backtrack(self, Pd, chunk=50000, inplace=False): ...
