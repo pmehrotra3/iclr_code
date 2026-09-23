@@ -1,7 +1,7 @@
 
 """
 train.py — Stage 1. Train one learned model per (d, K, seed) for the SELECTED process and save
-a checkpoint. Checkpoints live under data/<process>/checkpoints so ddim and flow runs never
+a checkpoint. Checkpoints live under checkpoints/<process>/<variant>/checkpoints so ddim and flow runs never
 collide. The seeds are cfg.n_seeds repeats from cfg.seed (core.seed_list); each repeat draws
 its own mode placement. Idempotent unless cfg.train.force_retrain.
 """
@@ -92,8 +92,10 @@ def n_eval_for(cfg, K):
 def save_gt_cache(data_dir, sampler, d, K, gt, n_eval, T_train, R99, seed, variant="unweighted"):
     p = gt_cache_path(data_dir, sampler, d, K, seed, variant)
     os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = f"{p}.tmp{os.getpid()}"
     torch.save({"gt": gt.detach().cpu(), "n_eval": int(n_eval), "seed": int(seed),
-                "T_train": int(T_train), "R99": float(R99)}, p)
+                "T_train": int(T_train), "R99": float(R99)}, tmp)
+    os.replace(tmp, p)          # atomic: concurrent eval jobs never read a half-written cache
 
 
 def load_gt_cache(data_dir, sampler, d, K, n_eval, seed, device, variant="unweighted"):
@@ -129,7 +131,8 @@ def _cell_geometry(cfg, d, K, seed, device):
         # sample_modes is the only geometry failure; re-raise as a distinct type so run()
         # does not also swallow CUDA OOM and other torch RuntimeErrors as "skipped".
         raise ModePlacementError(str(e)) from e
-    weights = core.mode_weights(K, seed, bool(cfg.data.get("weighted", False)), device=device)
+    weights = core.mode_weights(K, seed, bool(cfg.data.get("weighted", False)), device=device,
+                                base_seed=int(cfg.seed))
     return means_t, float(min_sep), core.r99(d, sigma, cfg.data.mass_q), weights
 
 
@@ -154,9 +157,9 @@ def _save_cell(cfg, d, K, seed, proc, model, means_t, min_sep, R99, hall, used_s
     variant = variant_of(cfg)
     sigma = cfg.data.sigma
     T = cfg.process.T_train
-    path = ckpt_path(cfg.paths.data, sampler, d, K, seed, variant)
+    path = ckpt_path(cfg.paths.checkpoints, sampler, d, K, seed, variant)
     converged = hall <= cfg.train.hall_target
-    arch = {"h": core.ScoreNet.H, "nb": core.ScoreNet.NB, "td": core.ScoreNet.TD}
+    arch = proc.arch(d)
     ckpt = {
         "state_dict": model.state_dict(),
         "sampler": sampler,
@@ -190,7 +193,7 @@ def _save_cell(cfg, d, K, seed, proc, model, means_t, min_sep, R99, hall, used_s
         n_eval = n_eval_for(cfg, K)
         X_te = proc.seeds(n_eval, d, seed + 1)
         gt = core.label_fate(proc.sample(model, X_te), means_t, R99)
-        save_gt_cache(cfg.paths.data, sampler, d, K, gt, n_eval, T, R99, seed, variant)
+        save_gt_cache(cfg.paths.checkpoints, sampler, d, K, gt, n_eval, T, R99, seed, variant)
     except Exception as e:
         print(f"[train:{sampler}] gt cache skipped d={d} K={K} seed={seed}: {e}")
     return path, converged
@@ -222,7 +225,7 @@ def train_cell(cfg, d, K, seeds, device):
 
     out, cells = {}, {}
     for seed in seeds:
-        path = ckpt_path(cfg.paths.data, sampler, d, K, seed, variant)
+        path = ckpt_path(cfg.paths.checkpoints, sampler, d, K, seed, variant)
         if os.path.exists(path) and not cfg.train.force_retrain:
             # reuse only if it was trained with the requested T_train; a checkpoint left by a
             # sweep with a different T would otherwise be evaluated (and averaged) silently
@@ -273,6 +276,7 @@ def train_cell(cfg, d, K, seeds, device):
                      "status": "trained" if converged else "not_converged",
                      "hall_rate": hall, "converged": converged,
                      "steps": used_steps, "attempts": attempts,
+                     "net": core.net_size(d, cfg), "width": c["proc"].arch(d)["h"],
                      "secs": round(time.time() - t0, 1)}
     return out
 
@@ -281,7 +285,7 @@ def run(cfg):
     device = core.get_device(cfg.device)
     sampler = cfg.process.name
     variant = variant_of(cfg)
-    os.makedirs(os.path.join(sampler_dir(cfg.paths.data, sampler, variant), "checkpoints"),
+    os.makedirs(os.path.join(sampler_dir(cfg.paths.checkpoints, sampler, variant), "checkpoints"),
                 exist_ok=True)
  
     manifest = {}
@@ -298,7 +302,7 @@ def run(cfg):
                 line = f"[train:{sampler}/{variant}] d={d:>2} K={K:>2} seed={seed:<4} -> {status}"
                 if status in ("trained", "not_converged"):
                     line += (f" hall={info['hall_rate']:.4f} steps={info['steps']} "
-                             f"attempts={info['attempts']} {info['secs']}s")
+                             f"attempts={info['attempts']} net={info.get('net', '?')}/{info.get('width', '?')} {info['secs']}s")
                 if status == "not_converged":
                     line += f"  ** above hall_target={cfg.train.hall_target} **"
                     n_bad += 1
@@ -306,7 +310,7 @@ def run(cfg):
 
     # one manifest per process, merged under a file lock so the concurrent per-cell jobs
     # scripts/main.sh fans out do not overwrite each other's entries
-    mpath = os.path.join(sampler_dir(cfg.paths.data, sampler, variant), "manifest.json")
+    mpath = os.path.join(sampler_dir(cfg.paths.checkpoints, sampler, variant), "manifest.json")
     with open(mpath, "a+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         f.seek(0)

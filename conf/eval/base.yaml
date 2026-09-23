@@ -4,3 +4,8 @@
 # sample count stays constant as K grows (K=2 -> 40k, K=16 -> 320k)
 n_eval_per_mode: 20000
 n_eval: null          # set to a fixed count to override the per-mode scaling regardless of K
+part: false           # true: write this job's rows to parts/d<...>.json instead of results.json
+                      # (scripts/main.sh runs evaluate per d, then stages=[merge,visualize])
+eval_per_anchor: null  # null: score every predictor on all n_eval seeds. A number r: per budget, score on
+                       # r * n_anchors (ball+shell anchors) seeds drawn from that pool -- hallucinations
+                       # in the pool's ratio, the rest split evenly across the K modes

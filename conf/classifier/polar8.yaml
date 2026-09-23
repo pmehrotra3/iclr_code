@@ -1,5 +1,0 @@
-# classifier/polar8 - degree-8 polar-boundary predictor spec
-
-name: polar8  # predictor family
-arch: polar   # implementation: polar polynomial boundary
-degree: 8     # polynomial degree

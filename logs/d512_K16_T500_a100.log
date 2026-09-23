@@ -1,0 +1,110 @@
+/home/pmehrotra3/workspace/test_run/iclr_code/code/evaluate.py:42: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  ck = torch.load(path, map_location=device)
+/home/pmehrotra3/workspace/test_run/iclr_code/code/train.py:105: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  blob = torch.load(p, map_location=device)
+======================================================================
+process:
+  T_train: 500
+  T_true: 500
+  name: ddim
+  beta_min: 0.0001
+  beta_max: 0.02
+  true_order: heun
+data:
+  mass_q: 0.99
+  weighted: false
+  name: gmm
+  sigma: 0.1
+  radius: 2.0
+  m_mult: 1.5
+sweep:
+  d:
+  - 512
+  K:
+  - 16
+  anchors:
+  - 100
+train:
+  force_retrain: false
+  base_steps: 30000
+  lr: 0.001
+  lr_min: 1.0e-05
+  grad_clip: 1.0
+  ema_decay: 0.999
+  ema_warmup: 1000
+  batch: 512
+  small_max_d: 64
+  width:
+    small: 256
+    large: 1024
+  n_train: 100000
+  cuda_graph: true
+  graph_streams: true
+  probe_n: 10000
+  hall_target: 0.015
+  step_growth: 1.7
+  max_attempts: 2
+eval:
+  n_eval_per_mode: 20000
+  n_eval: null
+  part: false
+anchors:
+  seed: 0
+  shell_frac: 0.5
+  shell_sigma: 2.0
+  n_calibrate: 5000
+  altered_knn:
+    n_rings: 5
+    r_max: 1.5
+    weight: linear
+    w_min: 0.2
+classifier:
+  _shared:
+    hidden: 256
+    depth: 4
+    degree: 3
+    epochs: 30
+    batch: 2048
+    lr: 0.003
+    weight_decay: 0.0001
+    min_steps: 3000
+    ensemble: 3
+    k: 10
+    bandwidth: 1.0
+    temperature: 0.1
+    threshold: auto
+    confidence: entropy
+  models:
+    knn:
+      name: knn
+      arch: knn
+    altered_knn:
+      name: altered_knn
+      arch: altered_knn
+    quadratic:
+      name: quadratic
+      arch: quadratic
+    polar3:
+      name: polar3
+      arch: polar
+      degree: 3
+stages:
+- evaluate
+device: cuda
+seed: 0
+n_seeds: 1
+run_id: d512_K16_T500_a100
+paths:
+  root: ${oc.env:ATLAS_ROOT,${oc.env:PWD}}
+  checkpoints: ${paths.root}/checkpoints
+  output: ${paths.root}/output
+
+======================================================================
+
+>>> STAGE: evaluate
+----------------------------------------
+[eval:ddim] d=512 K=16 budgets=[100]: est. peak 3.7 GB, GPU free 50.4/50.9 GB
+[eval:ddim] d=512 K=16 seeds=1 hall_gt=0.013+-0.000 | knn: full=0.134+-0.000 modeF1=0.134+-0.000 hallF1=0.023+-0.000 @ 2400 anchors
+[eval:ddim] wrote /home/pmehrotra3/workspace/test_run/iclr_code/output/d512_K16_T500_a100/ddim/unweighted/T500/results.json, /home/pmehrotra3/workspace/test_run/iclr_code/output/d512_K16_T500_a100/ddim/unweighted/T500/results.csv (mean +- std over 1 seeds) and /home/pmehrotra3/workspace/test_run/iclr_code/output/d512_K16_T500_a100/ddim/unweighted/T500/results_per_seed.csv
+
+All requested stages complete.

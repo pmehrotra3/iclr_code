@@ -1,0 +1,5 @@
+# classifier/polar3 - degree-3 polar-boundary predictor spec
+
+name: polar3  # predictor family
+arch: polar   # implementation: polar polynomial boundary
+degree: 3     # polynomial degree

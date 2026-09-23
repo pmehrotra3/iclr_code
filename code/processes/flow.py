@@ -35,7 +35,7 @@ class FlowOTProcess(Process):
 
     # ---- network: same backbone, interpreted as a velocity field ----
     def build_model(self, d):
-        return core.ScoreNet(d).to(self.device)
+        return core.ScoreNet(d, **self.arch(d)).to(self.device)
 
     def train_closure(self, K, d, batch, seed):
         torch.manual_seed(seed)
@@ -132,10 +132,11 @@ class FlowOTProcess(Process):
         return self._integrate(self._true_velocity, X0, chunk, self.true_solver)
 
     @torch.no_grad()
-    def true_field_backtrack(self, Pd, chunk=50000):
-        """Integrate the analytic marginal velocity BACKWARD, t: 1 -> 0 (data -> noise)."""
+    def true_field_backtrack(self, Pd, chunk=50000, inplace=False):
+        """Integrate the analytic marginal velocity BACKWARD, t: 1 -> 0 (data -> noise).
+        inplace=True overwrites Pd instead of cloning it."""
         dt = 1.0 / (self.T - 1)
-        X = Pd.clone()
+        X = Pd if inplace else Pd.clone()
         for i in reversed(range(1, self.T)):
             t = float(self.ts[i])
             for s in range(0, X.shape[0], chunk):

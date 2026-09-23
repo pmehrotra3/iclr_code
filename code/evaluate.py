@@ -6,8 +6,8 @@ Per (d, K) cell, per anchor budget:
      band; core.altered_knn_anchors: mode-only weighted rings). No model involved.
   2. Backtrack them to SEED space with the exact analytic field (proc.true_field_backtrack).
   3. Fit each predictor in classifier.models on the (seed, label) pairs -- knn, altered_knn,
-     quadratic, polar8. altered_knn's confidence cut is calibrated on fresh seeds labelled by the
-     exact score (proc.label(None, ...)); each parametric model also gets a <name>_cal variant.
+     quadratic, polar3. altered_knn's confidence cut is calibrated on fresh seeds labelled by the
+     exact score (proc.label(None, ...)).
   4. Ground truth: eval.n_eval_per_mode * K fresh seeds pushed through the LEARNED sampler,
      labelled with L.
   5. Score every predictor against that ground truth (fate.fate_metrics).
@@ -25,6 +25,8 @@ No plotting here.
 from __future__ import annotations
 import os
 import json
+import glob
+import shutil
 import time
 import numpy as np
 import torch
@@ -59,12 +61,65 @@ def budgets(cfg):
     return [int(x) for x in ([b] if isinstance(b, (int, float, str)) else b)]
 
 
+def anchor_memory_gb(cfg, d, K):
+    """Estimated peak GPU memory (GB) of eval_one for the LARGEST anchor budget, from the
+    standing fp32 tensors: the seed-space ball anchors plus the altered_knn ring anchors
+    (each set is allocated once and backtracked in place, so it exists exactly once), plus
+    the eval seeds, plus ~3 GB of working memory (a 50k-row backtrack chunk, the
+    classifiers, kNN distance blocks). Scales as budget * K * d: d=512 / K=16 / 300k per
+    mode is ~28 GB."""
+    a = cfg.anchors
+    b = max(budgets(cfg))
+    f = 4 * d                                          # bytes per fp32 point
+    n_ball = b * K * (1 + float(a.shell_frac))
+    _models = cfg.classifier.models
+    _entries = _models.values() if OmegaConf.is_dict(_models) else _models
+    need_altered = any(_spec(cfg, m)["arch"] == "altered_knn" for m in _entries)
+    n_alt = b * K if need_altered else 0
+    x_te = n_eval_for(cfg, K) * f
+    return ((n_ball + n_alt) * f + x_te + 3e9) / 1e9
+
+
+def preflight(cfg, d, K, device):
+    """Abort with a clear message (instead of a CUDA OOM hours in) when the largest budget of
+    this cell cannot fit the GPU; prints the estimate either way."""
+    need = anchor_memory_gb(cfg, d, K)
+    if device.type != "cuda":
+        return
+    free, total = (x / 1e9 for x in torch.cuda.mem_get_info(device))
+    tag = f"[eval:{cfg.process.name}] d={d} K={K} budgets={budgets(cfg)}"
+    print(f"{tag}: est. peak {need:.1f} GB, GPU free {free:.1f}/{total:.1f} GB")
+    if need > 0.92 * free:
+        raise MemoryError(f"{tag}: estimated peak {need:.1f} GB exceeds free GPU memory "
+                          f"{free:.1f} GB; lower sweep.anchors, K, or eval.n_eval_per_mode "
+                          f"(or run one eval job per GPU)")
+
+
+def stratified_eval_idx(gt, K, n_total, seed):
+    """Indices of n_total eval seeds drawn without replacement from the pool labelled gt:
+    hallucinations (-1) in the pool's ratio, the remaining seeds split evenly across the K
+    modes (the first n % K modes take one extra). Raises if a class has too few seeds."""
+    g = torch.Generator(device="cpu").manual_seed(int(seed))
+    gt_c = gt.cpu()
+    n_hall = int(round(n_total * float((gt_c == -1).float().mean())))
+    base, extra = divmod(n_total - n_hall, K)
+    want = [(-1, n_hall)] + [(k, base + (1 if k < extra else 0)) for k in range(K)]
+    idx = []
+    for lab, n in want:
+        pool = torch.nonzero(gt_c == lab).squeeze(1)
+        if n > pool.numel():
+            raise ValueError(f"eval_per_anchor: need {n} seeds of class {lab}, pool has "
+                             f"{pool.numel()}; raise eval.n_eval_per_mode")
+        idx.append(pool[torch.randperm(pool.numel(), generator=g)[:n]])
+    return torch.cat(idx).to(gt.device)
+
+
 def eval_one(cfg, d, K, seed, device):
     """Evaluate one (d, K) cell for one repeat `seed`: every predictor at every anchor budget.
     Returns result rows."""
     sampler = cfg.process.name
     variant = variant_of(cfg)
-    path = ckpt_path(cfg.paths.data, sampler, d, K, seed, variant)
+    path = ckpt_path(cfg.paths.checkpoints, sampler, d, K, seed, variant)
     if not os.path.exists(path):
         return None
 
@@ -76,6 +131,8 @@ def eval_one(cfg, d, K, seed, device):
     # mixing weights the model was trained on (older checkpoints: none = uniform); the exact
     # reference process must describe the same weighted GMM
     weights = ck.get("weights", None)
+    # recorded per row so the results show which imbalance each repeat was trained on
+    w_row = [round(float(x), 4) for x in weights] if weights is not None else None
 
     proc = make_process(sampler, means_t, variance, T, device, cfg, weights)
     proc_true = make_process(sampler, means_t, variance, int(cfg.process.T_true), device, cfg,
@@ -86,10 +143,10 @@ def eval_one(cfg, d, K, seed, device):
     # only on a miss, so a full T sweep runs the N-seed forward pass at most once per (d, K).
     n_eval = n_eval_for(cfg, K)
     X_te = proc.seeds(n_eval, d, seed + 1)
-    gt = load_gt_cache(cfg.paths.data, sampler, d, K, n_eval, seed, device, variant)
+    gt = load_gt_cache(cfg.paths.checkpoints, sampler, d, K, n_eval, seed, device, variant)
     if gt is None:
         gt = core.label_fate(proc.sample(model, X_te), means_t, R99)
-        save_gt_cache(cfg.paths.data, sampler, d, K, gt, n_eval, T, R99, seed, variant)
+        save_gt_cache(cfg.paths.checkpoints, sampler, d, K, gt, n_eval, T, R99, seed, variant)
     del model
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -103,25 +160,35 @@ def eval_one(cfg, d, K, seed, device):
     specs = [_spec(cfg, m) for m in _entries]
     need_altered = any(s["arch"] == "altered_knn" for s in specs)
 
-    # seeds labelled by the EXACT score at T_true: altered_knn's calibration set AND the
-    # prior-calibration target for the parametric models (Step 4).
+    # seeds labelled by the EXACT score at T_true: altered_knn's calibration set
     X_cal = proc.seeds(int(a.n_calibrate), d, seed + 2)
     y_cal = proc_true.label(None, X_cal, R99)
-    cal_rate = float((y_cal == -1).float().mean())      # exact-score hallucination fraction
+
+    per_anchor = cfg.eval.get("eval_per_anchor", None)
 
     rows = []
     for b in budgets(cfg):
+        # scored seeds: all n_eval, or (eval_per_anchor) a stratified subset of the pool sized
+        # per_anchor * (ball + shell anchors) -- the same subset for every predictor
+        if per_anchor:
+            n_ball = K * (int(b) + max(1, int(round(float(a.shell_frac) * int(b)))))
+            sel = stratified_eval_idx(gt, K, int(round(float(per_anchor) * n_ball)), seed + 3)
+            X_b, gt_b = X_te[sel], gt[sel]
+        else:
+            X_b, gt_b = X_te, gt
         # step 1 + 2: plant in data space, backtrack to seed space with the exact field
         P, y = core.ball_anchors(means_t, R99, int(b), float(a.shell_frac), float(a.shell_sigma),
                                  sigma, int(a.seed), device)
-        A = proc_true.true_field_backtrack(P)
+        A = proc_true.true_field_backtrack(P, inplace=True)   # P is overwritten: one (n, d) tensor, not two
+        del P
         Aa = ya = wa = None
         if need_altered:
             rg = a.altered_knn
             Pa, ya, wa = core.altered_knn_anchors(
                 means_t, R99, int(b), int(rg.n_rings), float(rg.r_max), str(rg.weight),
                 float(rg.w_min), sigma=sigma, seed=int(a.seed), device=device)
-            Aa = proc_true.true_field_backtrack(Pa)
+            Aa = proc_true.true_field_backtrack(Pa, inplace=True)
+            del Pa
 
         for spec in specs:                                          # step 3
             t0 = time.time()
@@ -132,21 +199,17 @@ def eval_one(cfg, d, K, seed, device):
                 for net in nets:
                     net.calibrate(X_cal, y_cal)
             n_anchors = int(nets[0].X.shape[0]) if hasattr(nets[0], "X") else int(A.shape[0])
-            met = fate.fate_metrics(fate.predict_fate(nets, X_te), gt)   # steps 4 + 5
+            met = fate.fate_metrics(fate.predict_fate(nets, X_b), gt_b)   # steps 4 + 5
             rows.append({"seed": seed, "d": d, "K": K, "n_per_mode": int(b), "n_anchors": n_anchors,
                          "model": spec["name"], "arch": spec["arch"],
-                         "hall_gt": hall_gt, "n_mode": int(m_mode.sum()), "n_hall": int(m_hall.sum()),
+                         "hall_gt": hall_gt, "n_eval": int(gt_b.numel()),
+                         "n_mode": int((gt_b >= 0).sum()), "n_hall": int((gt_b == -1).sum()),
+                         "weights": w_row,
                          "secs": round(time.time() - t0, 1), **met})
-
-            # Step 4 -- prior calibration: shift the hallucination logit so the parametric model
-            # calls exactly the exact-score hallucination fraction; reported as <name>_cal.
-            if spec["arch"] in fate.PARAMETRIC:
-                bias = fate.hall_bias_for_rate(nets, X_cal, cal_rate)
-                met_c = fate.fate_metrics(fate.predict_fate(nets, X_te, hall_bias=bias), gt)
-                rows.append({"seed": seed, "d": d, "K": K, "n_per_mode": int(b), "n_anchors": n_anchors,
-                             "model": spec["name"] + "_cal", "arch": spec["arch"],
-                             "hall_gt": hall_gt, "n_mode": int(m_mode.sum()), "n_hall": int(m_hall.sum()),
-                             "secs": round(time.time() - t0, 1), **met_c})
+            del nets
+        del A, Aa, X_b, gt_b                               # release this budget's anchors before the next (bigger) one
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
     return rows
 
@@ -166,7 +229,8 @@ def aggregate(results):
         rs = sorted(rs, key=lambda r: r["seed"])
         row = {"d": d, "K": K, "n_per_mode": b, "n_anchors": rs[0]["n_anchors"],
                "model": model, "arch": rs[0]["arch"],
-               "n_seeds": len(rs), "seeds": [r["seed"] for r in rs]}
+               "n_seeds": len(rs), "seeds": [r["seed"] for r in rs],
+               "weights": [r.get("weights") for r in rs]}   # per-seed mixing weights, in seed order
         for k in AGG_KEYS:
             v = np.array([r[k] for r in rs], dtype=np.float64)
             row[k] = float(np.nanmean(v)) if np.isfinite(v).any() else float("nan")
@@ -190,6 +254,7 @@ def run(cfg):
     results = []
     for d in cfg.sweep.d:
         for K in cfg.sweep.K:
+            preflight(cfg, int(d), int(K), device)
             cell = []
             for seed in seeds:
                 rows = eval_one(cfg, int(d), int(K), seed, device)
@@ -213,12 +278,28 @@ def run(cfg):
                          f" @ {best['n_anchors']} anchors")
             print(line)
 
+    if bool(cfg.eval.get("part", False)):
+        # one part per d-subset (scripts/main.sh fans phase 2 out per d); `merge` joins them
+        os.makedirs(os.path.join(out_dir, "parts"), exist_ok=True)
+        tag = "d" + "_".join(str(int(d)) for d in cfg.sweep.d)
+        pj = os.path.join(out_dir, "parts", f"{tag}.json")
+        with open(pj, "w") as f:
+            json.dump({"sampler": sampler, "variant": variant, "run_id": cfg.run_id,
+                       "d": [int(d) for d in cfg.sweep.d], "seeds": seeds, "results": results}, f)
+        print(f"[eval:{sampler}] wrote part {pj} ({len(results)} rows); run stages=[merge] to combine")
+        return {"part": pj, "n_results": len(results)}
+
+    return _write_results(cfg, out_dir, sampler, variant, primary, seeds, results)
+
+
+def _write_results(cfg, out_dir, sampler, variant, primary, seeds, results):
+    """Aggregate the per-seed rows and write results.json / results.csv / results_per_seed.csv."""
     agg = aggregate(results)
     js = os.path.join(out_dir, "results.json")
     with open(js, "w") as f:
         json.dump({"sampler": sampler, "variant": variant, "weighted": variant == "weighted",
                    "run_id": cfg.run_id,
-                   "config_sweep": {"d": list(cfg.sweep.d), "K": list(cfg.sweep.K),
+                   "config_sweep": {"d": sorted({int(r["d"]) for r in results}), "K": list(cfg.sweep.K),
                                     "anchors": budgets(cfg), "T_true": int(cfg.process.T_true),
                                     "seeds": seeds},
                    "primary": primary, "metrics": list(fate.METRICS),
@@ -236,11 +317,38 @@ def run(cfg):
     csv_s = os.path.join(out_dir, "results_per_seed.csv")
     with open(csv_s, "w") as f:
         f.write("sampler,seed,d,K,hall_gt,model,arch,n_per_mode,n_anchors,"
-                + ",".join(fate.METRICS) + "\n")
+                + ",".join(fate.METRICS) + ",weights\n")
         for r in results:
+            w = " ".join(f"{x:.4f}" for x in r["weights"]) if r.get("weights") else ""
             f.write(f"{sampler},{r['seed']},{r['d']},{r['K']},{r['hall_gt']:.4f},{r['model']},{r['arch']},"
                     f"{r['n_per_mode']},{r['n_anchors']},"
-                    + ",".join(f"{r[k]:.4f}" for k in fate.METRICS) + "\n")
+                    + ",".join(f"{r[k]:.4f}" for k in fate.METRICS) + f",{w}\n")
 
     print(f"[eval:{sampler}] wrote {js}, {csv} (mean +- std over {len(seeds)} seeds) and {csv_s}")
     return {"json": js, "csv": csv, "n_results": len(results), "n_aggregate": len(agg)}
+
+
+def merge(cfg):
+    """Join the per-d part files written by evaluate with eval.part=true (one phase-2 job per
+    (process, variant, T, d) in scripts/main.sh) into the usual results.json / csv files, then
+    remove the parts. Rows are ordered by (d, K, seed) so the output matches a single-job run."""
+    sampler = cfg.process.name
+    variant = variant_of(cfg)
+    out_dir = sweep_dir(cfg.paths.output, cfg.run_id, sampler, cfg.process.T_true, variant)
+    parts = sorted(glob.glob(os.path.join(out_dir, "parts", "*.json")))
+    if not parts:
+        raise FileNotFoundError(f"[merge:{sampler}] no part files under {out_dir}/parts")
+    _models = cfg.classifier.models
+    _names = list(_models.keys()) if OmegaConf.is_dict(_models) else [str(m) for m in _models]
+    primary = str(cfg.classifier.get("primary", _names[0] if _names else ""))
+    results, seeds, ds = [], None, []
+    for pj in parts:
+        with open(pj) as f:
+            p = json.load(f)
+        results += p["results"]; seeds = p["seeds"]; ds += p["d"]
+    results.sort(key=lambda r: (r["d"], r["K"], r["seed"]))
+    print(f"[merge:{sampler}/{variant}] T={int(cfg.process.T_true)}: {len(parts)} parts, "
+          f"d={sorted(ds)}, {len(results)} rows")
+    out = _write_results(cfg, out_dir, sampler, variant, primary, seeds, results)
+    shutil.rmtree(os.path.join(out_dir, "parts"))
+    return out

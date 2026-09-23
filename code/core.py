@@ -135,7 +135,7 @@ class MLPBlock(nn.Module):
 
 
 class ScoreNet(nn.Module):
-    H, NB, TD = 256, 4, 128
+    H, NB, TD = 256, 4, 128          # defaults: hidden width, residual blocks, time-embed dim
 
     def __init__(self, d, h=H, nb=NB, td=TD):
         super().__init__()
@@ -151,6 +151,26 @@ class ScoreNet(nn.Module):
         for b in self.bl:
             z = b(z)
         return self.out(z)
+
+
+def net_size(d, cfg=None):
+    """'small' for d <= train.small_max_d, else 'large'. Two model sizes for the whole sweep:
+    small covers d <= 64, large covers d = 128 .. 512. (A single fixed width cannot resolve
+    the sigma-ball in high d: the R99 margin shrinks like 1/sqrt(d) while the model's
+    residual error does not.)"""
+    t = getattr(cfg, "train", None) if cfg is not None else None
+    small_max = int(getattr(t, "small_max_d", 64)) if t is not None else 64
+    return "small" if d <= small_max else "large"
+
+
+def net_arch(d, cfg=None):
+    """ScoreNet constructor kwargs for ambient dimension d: the hidden width of the size class
+    net_size(d) from train.width (a {small, large} mapping); without a config every d uses the
+    ScoreNet default. Depth and time-embedding dim stay at the ScoreNet defaults."""
+    t = getattr(cfg, "train", None) if cfg is not None else None
+    widths = getattr(t, "width", None) if t is not None else None
+    h = int(widths[net_size(d, cfg)]) if widths else ScoreNet.H
+    return {"h": h, "nb": ScoreNet.NB, "td": ScoreNet.TD}
 
 
 # --------------------------------------------------------------------------------------
@@ -355,15 +375,24 @@ def _run_optimizers_graph(models, loss_closures, n_steps, lr, lr_min, grad_clip,
 # --------------------------------------------------------------------------------------
 # learned model: train + sample
 # --------------------------------------------------------------------------------------
-def mode_weights(K, seed, weighted, device=None):
-    """Mixing weights (K,) of the GMM. Uniform 1/K when not weighted; otherwise w_k ~ U(0,1)
-    i.i.d. normalised to sum 1, drawn from `seed` so each repeat gets its own assignment of
-    imbalance to modes (the mean +- std over seeds averages over those assignments)."""
+WEIGHT_LO, WEIGHT_HI = 0.3, 0.8   # raw mixing weights are drawn from this closed interval
+
+
+def mode_weights(K, seed, weighted, device=None, base_seed=0):
+    """Mixing weights (K,) of the GMM. Uniform 1/K when not weighted. Otherwise ONE imbalance
+    profile per (K, base_seed) -- w_k ~ U[WEIGHT_LO, WEIGHT_HI] i.i.d., normalised to sum 1
+    (so no mode is more than WEIGHT_HI/WEIGHT_LO x another) -- shared by every repeat, and
+    each repeat `seed` assigns that profile to the modes by its own random permutation
+    (sampling the weights without replacement). So the mean +- std over seeds averages over
+    placements of the SAME weights, not over different weight draws."""
     if not weighted:
         return torch.full((K,), 1.0 / K, device=device)
-    g = torch.Generator(device=device).manual_seed(int(seed) + 13)
-    w = torch.rand(K, generator=g, device=device)
-    return w / w.sum()
+    # drawn on CPU so the profile and its placement do not depend on the device
+    g = torch.Generator().manual_seed(int(base_seed) + 13)
+    w = WEIGHT_LO + (WEIGHT_HI - WEIGHT_LO) * torch.rand(K, generator=g)
+    w = w / w.sum()
+    g = torch.Generator().manual_seed(int(seed) + 17)
+    return w[torch.randperm(K, generator=g)].to(device)
 
 
 def _draw_modes(K, n, weights, g, device):
@@ -407,13 +436,14 @@ def _minibatch(means_t, variance, batch, n_train, seed, device, weights=None):
 
 
 def learned_closure(means_t, d, K, abar, T, variance, batch=512, seed=0, device=None,
-                    n_train=None, weights=None):
-    """A fresh ScoreNet (init seeded by `seed`) and its eps-prediction loss closure: one
-    minibatch of noised GMM samples at random steps, MSE against the noise. The clean samples
-    come from a fixed n_train-sample training set (or fresh draws when n_train is None)."""
+                    n_train=None, weights=None, arch=None):
+    """A fresh ScoreNet (init seeded by `seed`; size from `arch`, see net_arch) and its
+    eps-prediction loss closure: one minibatch of noised GMM samples at random steps, MSE
+    against the noise. The clean samples come from a fixed n_train-sample training set (or
+    fresh draws when n_train is None)."""
     torch.manual_seed(seed)
     sa = torch.sqrt(abar); soma = torch.sqrt(1 - abar)
-    m = ScoreNet(d).to(device)
+    m = ScoreNet(d, **(arch or {})).to(device)
     draw = _minibatch(means_t, variance, batch, n_train, seed, device, weights)
 
     def step():
@@ -513,16 +543,19 @@ def _ddim_step(x, eps, ab, abp):
 
 
 @torch.no_grad()
-def _ddim_transport(Xd, means_t, abar_t, order, levels, variance, chunk=50000, logw=None):
+def _ddim_transport(Xd, means_t, abar_t, order, levels, variance, chunk=50000, logw=None,
+                    inplace=False):
     """Integrate the exact-score DDIM map along the sequence of (ab, abp) `levels`.
 
     order='euler': one exact-eps evaluation per step (first order).
     order='heun' : predictor-corrector -- eps1 at x, predict x~ = DDIM(x, eps1), eps2 at x~
                    (at the TARGET level), then x' = DDIM(x, (eps1+eps2)/2). Second order,
                    and (data -> seed -> data) round-trips to L exactly at the same T.
+    inplace=True overwrites Xd instead of cloning it (the caller no longer needs the input):
+    halves the standing memory of a multi-GB anchor backtrack.
     """
     heun = str(order).lower() == "heun"
-    X = Xd.clone()
+    X = Xd if inplace else Xd.clone()
     for ab, abp in levels:
         for s in range(0, X.shape[0], chunk):
             xs = X[s:s + chunk]
@@ -536,11 +569,13 @@ def _ddim_transport(Xd, means_t, abar_t, order, levels, variance, chunk=50000, l
 
 
 @torch.no_grad()
-def backtrack_true(Xd, means_t, abar_t, T, variance, chunk=50000, order="heun", weights=None):
-    """Data -> seed (noise) under the exact GMM score. `order` in {euler, heun}."""
+def backtrack_true(Xd, means_t, abar_t, T, variance, chunk=50000, order="heun", weights=None,
+                   inplace=False):
+    """Data -> seed (noise) under the exact GMM score. `order` in {euler, heun}. inplace=True
+    overwrites Xd (see _ddim_transport)."""
     levels = [(abar_t[i - 1], abar_t[i]) for i in range(1, T)]
     return _ddim_transport(Xd, means_t, abar_t, order, levels, variance, chunk,
-                           log_weights(weights, Xd.device))
+                           log_weights(weights, Xd.device), inplace=inplace)
 
 
 @torch.no_grad()
@@ -565,48 +600,52 @@ def ball_anchors(means_t, R99, n_per_mode, shell_frac=0.5, shell_sigma=2.0, sigm
                  seed=0, device=None):
     """Per mode: n_per_mode points uniform in the R99 ball, plus shell_frac * n_per_mode
     points uniform in radius over R99 .. R99 + shell_sigma * sigma. Every anchor is coloured
-    with the ground-truth rule L (nearest mode within R99, else -1)."""
+    with the ground-truth rule L (nearest mode within R99, else -1).
+
+    The (n, d) tensor is allocated once and filled per mode: at d=512 with 300k anchors per
+    mode it is ~15 GB, so building a list of pieces and torch.cat-ing them would need twice
+    that for a moment."""
     K, d = means_t.shape
     g = torch.Generator(device=device).manual_seed(seed)
     n_shell = max(1, int(round(shell_frac * n_per_mode)))
     width = shell_sigma * sigma
-    P = []
+    per_mode = n_shell + n_per_mode
+    P = torch.empty(K * per_mode, d, device=device)
     for k in range(K):
+        s0 = k * per_mode
         u = torch.rand(n_per_mode, generator=g, device=device) ** (1.0 / d)
         dirs = torch.randn(n_per_mode, d, generator=g, device=device)
         dirs /= dirs.norm(dim=1, keepdim=True)
-        P.append(means_t[k] + (R99 * u)[:, None] * dirs)
+        torch.addcmul(means_t[k], (R99 * u)[:, None], dirs, out=P[s0:s0 + n_per_mode])
         r = R99 + width * torch.rand(n_shell, generator=g, device=device)
         dirs = torch.randn(n_shell, d, generator=g, device=device)
         dirs /= dirs.norm(dim=1, keepdim=True)
-        P.append(means_t[k] + r[:, None] * dirs)
-    P = torch.cat(P, 0)
+        torch.addcmul(means_t[k], r[:, None], dirs, out=P[s0 + n_per_mode:s0 + per_mode])
     return P, label_fate(P, means_t, R99)
-
-
 @torch.no_grad()
 def altered_knn_anchors(means_t, R99, n_per_mode, n_rings=5, r_max=1.5, weight="linear",
                         w_min=0.2, sigma=None, seed=0, device=None):
     """Per mode: n_rings concentric spheres of radius r_j = R99 * r_max * j / n_rings, each
     labelled with its mode, weighted by a radius-decaying confidence (linear or gaussian).
-    Returns P (n, d), y (n,), w (n,); no hallucination class."""
+    Returns P (n, d), y (n,), w (n,); no hallucination class. P is allocated once and filled
+    ring by ring (see ball_anchors); y and w are built as tensors, not Python lists."""
     K, d = means_t.shape
     g = torch.Generator(device=device).manual_seed(seed)
     per_ring = max(1, n_per_mode // n_rings)
-    P, y, w = [], [], []
+    per_mode = n_rings * per_ring
+    radii = [R99 * r_max * j / n_rings for j in range(1, n_rings + 1)]
+    if weight == "gaussian":
+        w_ring = [float(np.exp(-r ** 2 / (2 * sigma ** 2))) for r in radii]
+    else:
+        w_ring = [1.0 - (1.0 - w_min) * (r / (R99 * r_max)) for r in radii]
+    P = torch.empty(K * per_mode, d, device=device)
+    y = torch.arange(K, device=device).repeat_interleave(per_mode)
+    w = torch.tensor(w_ring, device=device, dtype=torch.float32).repeat_interleave(per_ring).repeat(K)
     for k in range(K):
-        for j in range(1, n_rings + 1):
-            r = R99 * r_max * j / n_rings
+        for j, r in enumerate(radii):
+            s0 = k * per_mode + j * per_ring
             dirs = torch.randn(per_ring, d, generator=g, device=device)
             dirs /= dirs.norm(dim=1, keepdim=True)
-            P.append(means_t[k] + r * dirs)
-            y += [k] * per_ring
-            if weight == "gaussian":
-                wj = float(np.exp(-r ** 2 / (2 * sigma ** 2)))
-            else:
-                wj = 1.0 - (1.0 - w_min) * (r / (R99 * r_max))
-            w += [wj] * per_ring
-    return (torch.cat(P, 0), torch.tensor(y, device=device),
-            torch.tensor(w, device=device, dtype=torch.float32))
-
-
+            blk = P[s0:s0 + per_ring]
+            torch.mul(dirs, r, out=blk); blk += means_t[k]        # == means_t[k] + r * dirs, bit for bit
+    return P, y, w

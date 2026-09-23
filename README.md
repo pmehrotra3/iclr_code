@@ -12,7 +12,7 @@ results.
 diffusion_atlas/
 ├── code/
 │   ├── core.py        # shared numerics: models, schedule, GMM, samplers, atlas, vote
-│   ├── train.py       # STAGE 1: train + save one checkpoint per (d,K)  -> data/
+│   ├── train.py       # STAGE 1: train + save one checkpoint per (d,K)  -> checkpoints/
 │   ├── evaluate.py    # STAGE 2: atlas + responsibility vs true score   -> output/
 │   ├── visualize.py   # STAGE 3: results.json -> figures (beside the results)
 │   └── main.py        # Hydra entry point dispatching the stages
@@ -25,7 +25,7 @@ diffusion_atlas/
 │   ├── eval/          # ground-truth evaluation: base.yaml
 │   ├── anchors/       # atlas anchors: base.yaml + altered_knn.yaml
 │   └── classifier/    # predictors: base.yaml (_shared) + one spec per predictor (knn, altered_knn, ...)
-├── data/              # checkpoints/  and  manifest.json   (generated)
+├── checkpoints/       # trained models, gt caches, manifest.json   (generated)
 └── output/            # per run: <sampler>/<run_id>/{results.json, results.csv, figures/}
 ```
 
@@ -46,7 +46,7 @@ The pipeline supports two generative processes, selected by the `process` group:
   (`process.solver = euler | midpoint | rk4`).
 
 Runs are **fully separate**: pick one process per run. Its checkpoints and results live
-under `data/<sampler>/` and `output/<sampler>/<run_id>/` (figures beside them, in
+under `checkpoints/<sampler>/` and `output/<sampler>/<run_id>/` (figures beside them, in
 `figures/`), so DDIM and Flow runs never overwrite each other.
 
 ```bash
@@ -93,7 +93,7 @@ Or just edit `conf/config.yaml`.
 
 ## What each stage writes
 
-- **train** → `data/<sampler>/checkpoints/model_d{d}_K{K}_s{seed}.pt` (one per repeat seed) and
+- **train** → `checkpoints/<sampler>/<variant>/checkpoints/model_d{d}_K{K}_s{seed}.pt` (one per repeat seed) and
   `data/<sampler>/manifest.json`. Idempotent: existing checkpoints are reused unless
   `train.force_retrain=true`.
 - **evaluate** → `output/<run_id>/<sampler>/T<T_true>/results.json`, `results.csv` (the
@@ -108,7 +108,7 @@ Or just edit `conf/config.yaml`.
 
 ## Improved recipe (the accuracy fixes)
 
-The defaults now follow the tuned recipe. Four changes lift the numbers over the earlier run:
+The defaults now follow the tuned recipe. Three changes lift the numbers over the earlier run:
 
 1. **Trainer (biggest gain).** `core.train_learned` / the flow trainer now cosine-decay the lr
    (`train.lr` → `train.lr_min`), clip the gradient norm (`train.grad_clip`), and keep an EMA of
@@ -119,10 +119,7 @@ The defaults now follow the tuned recipe. Four changes lift the numbers over the
 2. **Second-order exact-field backtrack.** `core.backtrack_true`/`forward_true` take a Heun
    predictor–corrector step (`process.true_order=heun` for DDIM, `process.true_solver=heun` for
    flow). Data → seed → data now round-trips to the label exactly (verified: label-match 1.0000).
-3. **Prior calibration.** Every parametric predictor also emits a `<name>_cal` row: its
-   hallucination logit is shifted so it calls exactly the exact-score hallucination fraction
-   (5 000 calibration seeds).
-4. **Stable, cached ground truth.** `eval.n_eval` is 200 000 (stable ~1–2 % hallucination metrics),
+3. **Stable, cached ground truth.** `eval.n_eval` is 200 000 (stable ~1–2 % hallucination metrics),
    and the ground-truth labels are cached at train time under `data/<sampler>/gt_cache/`, so a whole
    `T_true` sweep runs the N-seed forward pass at most once per `(d, K)`. Delete `gt_cache/` to force
    a recompute.

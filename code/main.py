@@ -17,6 +17,9 @@ Other handy overrides:
 from __future__ import annotations
 import os
 import sys
+# the eval stage holds a few multi-GB anchor tensors; expandable segments stop the caching
+# allocator from fragmenting around them (must be set before torch is imported)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -31,6 +34,7 @@ import visualize as viz_stage    # noqa: E402
 STAGES = {
     "train": train_stage.run,
     "evaluate": eval_stage.run,
+    "merge": eval_stage.merge,          # join per-d evaluate parts (eval.part=true) into results.json
     "visualize": viz_stage.run,
 }
 

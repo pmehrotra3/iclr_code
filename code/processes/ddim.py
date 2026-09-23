@@ -28,12 +28,12 @@ class DDIMProcess(Process):
         self.true_order = str(getattr(proc, "true_order", "heun")) if proc is not None else "heun"
 
     def build_model(self, d):
-        return core.ScoreNet(d).to(self.device)
+        return core.ScoreNet(d, **self.arch(d)).to(self.device)
 
     def train_closure(self, K, d, batch, seed):
         return core.learned_closure(self.means_t, d, K, self.abar, self.T, self.variance,
                                     batch, seed, self.device, n_train=self.n_train(),
-                                    weights=self.weights)
+                                    weights=self.weights, arch=self.arch(d))
 
     def train_model(self, K, d, n_steps, lr, batch, seed):
         model, step = self.train_closure(K, d, batch, seed)
@@ -54,11 +54,11 @@ class DDIMProcess(Process):
         return X
 
     @torch.no_grad()
-    def true_field_backtrack(self, Pd, chunk=50000):
+    def true_field_backtrack(self, Pd, chunk=50000, inplace=False):
         # reuse the shared true-score backtrack (data -> noise), Heun 2nd-order by default
         return core.backtrack_true(
             Pd, self.means_t, self.abar, self.T, self.variance, chunk=chunk, order=self.true_order,
-            weights=self.weights,
+            weights=self.weights, inplace=inplace,
         )
 
     @torch.no_grad()

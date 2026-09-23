@@ -8,6 +8,10 @@ grad_clip: 1.0        # gradient-norm clip (null = off)
 ema_decay: 0.999      # weight EMA decay (null = off)
 ema_warmup: 1000      # steps to ramp EMA decay up to ema_decay
 batch: 512            # minibatch size
+small_max_d: 64       # model size: 'small' for d <= 64, 'large' for d = 128 .. 512
+width:                # ScoreNet hidden width per size
+  small: 256          #   (the existing d <= 64 checkpoints)
+  large: 1024         #   one net shared by d = 128, 256, 512
 n_train: 100000       # fixed training set per (d, K, seed); null = fresh samples every step
 cuda_graph: true      # capture the train step in a CUDA graph (removes launch overhead; same maths)
 graph_streams: true   # one stream per seed inside that graph (seeds train concurrently, ~2x).

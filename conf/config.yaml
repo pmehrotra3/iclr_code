@@ -13,7 +13,7 @@ defaults:
   - classifier@classifier.models.knn: knn
   - classifier@classifier.models.altered_knn: altered_knn
   - classifier@classifier.models.quadratic: quadratic
-  - classifier@classifier.models.polar8: polar8
+  - classifier@classifier.models.polar3: polar3
   - _self_
 
 stages: [train, evaluate, visualize]  # stages to run, in order
@@ -26,7 +26,7 @@ run_id: ${now:%Y-%m-%d_%H-%M-%S}      # one output dir per invocation; every sta
 
 paths:
   root: ${oc.env:ATLAS_ROOT,${oc.env:PWD}}  # repo root
-  data: ${paths.root}/data                  # checkpoints + caches
+  checkpoints: ${paths.root}/checkpoints    # trained models + gt caches
   output: ${paths.root}/output              # results + figures
 
 hydra:

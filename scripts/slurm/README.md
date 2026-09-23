@@ -78,5 +78,5 @@ d in (2,4,8,16,32,64), K in (2,4,8,16); so 0..23 are ddim, 24..47 flow, and K va
 
 ```bash
 rsync -av <cluster>:<path>/iclr_code/output/<run_id>/ output/<run_id>/
-rsync -av <cluster>:<path>/iclr_code/data/ data/       # checkpoints + gt caches, optional
+rsync -av <cluster>:<path>/iclr_code/checkpoints/ checkpoints/   # trained models + gt caches, optional
 ```

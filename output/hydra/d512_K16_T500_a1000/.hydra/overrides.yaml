@@ -1,0 +1,15 @@
+- process=ddim
+- data=gmm
+- data.weighted=false
+- process.T_train=500
+- process.T_true=500
+- sweep.d=[512]
+- sweep.K=[16]
+- seed=0
+- n_seeds=1
+- data.radius=2.0
+- stages=[evaluate]
+- train.force_retrain=false
+- device=cuda
+- sweep.anchors=[1000]
+- run_id=d512_K16_T500_a1000

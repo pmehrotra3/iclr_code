@@ -44,6 +44,10 @@ class Process(ABC):
         return torch.randn(N, d, generator=g, device=self.device)
 
     # ---- learned model ----
+    def arch(self, d):
+        """ScoreNet kwargs for this d (width scales with d via cfg.train, see core.net_arch)."""
+        return core.net_arch(d, self.cfg)
+
     @abstractmethod
     def train_closure(self, K, d, batch, seed):
         """Return (untrained model, loss_closure) for one training run seeded by `seed`."""
@@ -88,8 +92,9 @@ class Process(ABC):
     # ---- analytic reference field + atlas backtrack ----
     @torch.no_grad()
     @abstractmethod
-    def true_field_backtrack(self, Pd, chunk=50000):
-        """Carry data-space points Pd back to seed space via the analytic field."""
+    def true_field_backtrack(self, Pd, chunk=50000, inplace=False):
+        """Carry data-space points Pd back to seed space via the analytic field. inplace=True
+        overwrites Pd (the caller keeps only the seed-space result) instead of cloning it."""
         ...
 
     @torch.no_grad()

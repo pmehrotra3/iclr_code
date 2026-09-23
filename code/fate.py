@@ -255,10 +255,22 @@ def train_ensemble(X, y, K, spec: dict, device=None, w=None):
     return [train_fate_classifier(X, y, K, seed=e, **kw) for e in range(n_ens)]
 
 
+def _infer_chunk(nets, chunk, budget_bytes=2e9):
+    """Rows per inference block: `chunk`, shrunk so a net's largest intermediate stays under
+    ~budget_bytes. Only quadratic needs it: its d(d+1)/2 pairwise features are 131k at d=512,
+    so a 100k-row block would be ~50 GB."""
+    width = max((int(n.iu.shape[1]) for n in nets if getattr(n, "arch", None) == "quadratic"),
+                default=0)
+    if width == 0:
+        return chunk
+    return max(1024, min(chunk, int(budget_bytes // (4 * width))))
+
+
 @torch.no_grad()
 def _hall_margin(nets, X, chunk=100000):
     """Per seed: summed log-prob of hallucination minus that of the best mode, and the best mode."""
     ms, ks = [], []
+    chunk = _infer_chunk(nets, chunk)
     for s in range(0, X.shape[0], chunk):
         lp = sum(torch.log_softmax(net(X[s:s + chunk]), 1) for net in nets)
         best, k = lp[:, 1:].max(1)
@@ -267,26 +279,10 @@ def _hall_margin(nets, X, chunk=100000):
 
 
 @torch.no_grad()
-def predict_fate(nets, X, chunk=100000, hall_bias=0.0):
-    """Ensemble prediction (summed log-prob) -> labels in {-1, 0..K-1}.
-
-    hall_bias is added to the hallucination log-prob before the argmax (see hall_bias_for_rate).
-    """
+def predict_fate(nets, X, chunk=100000):
+    """Ensemble prediction (summed log-prob) -> labels in {-1, 0..K-1}."""
     m, k = _hall_margin(nets, X, chunk)
-    return torch.where(m + hall_bias > 0, torch.full_like(k, -1), k)
-
-
-@torch.no_grad()
-def hall_bias_for_rate(nets, X, rate, chunk=100000):
-    """Hallucination log-prob offset that makes the ensemble call exactly `rate` of X hallucinations."""
-    m, _ = _hall_margin(nets, X, chunk)
-    n_hall = int(round(rate * m.shape[0]))
-    if n_hall <= 0:
-        return float(-(m.max().item()) - 1e-6)
-    if n_hall >= m.shape[0]:
-        return float(-(m.min().item()) + 1e-6)
-    top = torch.topk(m, n_hall + 1).values          # the n_hall largest margins become hallucinations
-    return float(-0.5 * (top[-1] + top[-2]).item())
+    return torch.where(m > 0, torch.full_like(k, -1), k)
 
 
 METRICS = ("full_acc", "mode_acc", "mode_f1", "hall_prec", "hall_rec", "hall_f1", "balanced")
