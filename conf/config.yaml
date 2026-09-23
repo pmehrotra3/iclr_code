@@ -6,7 +6,7 @@ defaults:
   - sweep: base           # the (d, K, anchors) grid
   - train: base           # learned-model training
   - eval: base            # ground-truth evaluation
-  - anchors: polar_weighted  # atlas anchors: polar_weighted (default) | altered_knn (old ball+shell)
+  - anchors: altered_knn  # atlas anchors (builds on anchors/base.yaml)
   - classifier: base      # shared classifier defaults (_shared)
 
   # predictors to run: delete a line to skip that predictor
@@ -14,6 +14,10 @@ defaults:
   - classifier@classifier.models.altered_knn: altered_knn
   - classifier@classifier.models.quadratic: quadratic
   - classifier@classifier.models.polar3: polar3
+  # hydra writes nothing of its own (no main.log, no .hydra/): main.py saves the resolved
+  # config into output/<run_id>/invocations/ instead
+  - override hydra/job_logging: disabled
+  - override hydra/hydra_logging: disabled
   - _self_
 
 stages: [train, evaluate, visualize]  # stages to run, in order
@@ -22,15 +26,20 @@ seed: 0                               # base RNG seed
 # independent repeats: seeds seed, seed+100, ... (each re-randomises the mode placement on the
 # sphere, the model init and the eval seeds); every metric is reported as mean +- std over them
 n_seeds: 3
-run_id: ${now:%Y-%m-%d_%H-%M-%S}      # one output dir per invocation; every stage shares it
+# the NAME of the run: everything it produces, checkpoints included, lives in output/<run_id>/.
+# Invocations with the same run_id add to the same run and resume where it stopped -- small
+# pieces or one big invocation give the same files (see code/runstate.py).
+run_id: abc123
+strict_run: true                      # refuse to add to a run made with different settings
 
 paths:
   root: ${oc.env:ATLAS_ROOT,${oc.env:PWD}}  # repo root
-  checkpoints: ${paths.root}/checkpoints    # trained models + gt caches
-  output: ${paths.root}/output              # results + figures
+  output: ${paths.root}/output              # output/<run_id>/{checkpoints/, <process>/, logs/}
+  checkpoints: ${paths.output}/${run_id}/checkpoints  # trained models + gt caches, per run
 
 hydra:
   run:
-    dir: ${paths.output}/hydra/${run_id}
+    dir: .
+  output_subdir: null
   job:
     chdir: false

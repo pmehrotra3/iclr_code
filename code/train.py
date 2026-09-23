@@ -1,15 +1,14 @@
 
 """
 train.py — Stage 1. Train one learned model per (d, K, seed) for the SELECTED process and save
-a checkpoint. Checkpoints live under checkpoints/<process>/<variant>/checkpoints so ddim and flow runs never
-collide. The seeds are cfg.n_seeds repeats from cfg.seed (core.seed_list); each repeat draws
+a checkpoint. Checkpoints live under output/<run_id>/checkpoints/<process>/<variant>/checkpoints so ddim
+and flow runs never collide. The seeds are cfg.n_seeds repeats from cfg.seed (core.seed_list); each repeat draws
 its own mode placement. Idempotent unless cfg.train.force_retrain.
 """
 from __future__ import annotations
 import os
 import json
 import time
-import glob
 import fcntl
 import subprocess
 import torch
@@ -21,7 +20,7 @@ from processes.factory import make_process
 
 # weighted (non-uniform mixing weights) and unweighted GMMs are separate experiments that share
 # everything else, so their checkpoints, caches and results live in sibling folders:
-#   data/<sampler>/<variant>/{checkpoints,gt_cache,manifest.json}
+#   output/<run_id>/checkpoints/<sampler>/<variant>/{checkpoints,gt_cache,manifest.json}
 #   output/<run_id>/<sampler>/<variant>/T<T_true>/
 def variant_of(cfg) -> str:
     """'weighted' or 'unweighted' from cfg.data.weighted."""
@@ -32,26 +31,6 @@ def sampler_dir(base, sampler, variant="unweighted"):
     return os.path.join(base, sampler, variant)
 
 
-def run_dir(base, sampler, run_id, variant="unweighted"):
-    """<base>/<sampler>/<variant>/<run_id> — one directory per invocation."""
-    return os.path.join(sampler_dir(base, sampler, variant), run_id)
-
-
-def latest_run_dir(base, sampler, variant="unweighted"):
-    """Newest existing run directory, or None. Timestamps sort lexicographically."""
-    pat = os.path.join(sampler_dir(base, sampler, variant), "[0-9]*")
-    runs = sorted(p for p in glob.glob(pat) if os.path.isdir(p))
-    return runs[-1] if runs else None
-
-
-def resolve_run_dir(base, sampler, run_id, variant="unweighted"):
-    """The run_id directory if it has results, else the newest one that does."""
-    d = run_dir(base, sampler, run_id, variant)
-    if os.path.exists(os.path.join(d, "results.json")):
-        return d
-    return latest_run_dir(base, sampler, variant)
-
-
 def sweep_dir(base, run_id, sampler, T_true, variant="unweighted"):
     """output/<run_id>/<sampler>/<variant>/T<T_true> — one folder per (run, process, variant, T).
     d is a heatmap axis (not a folder), so a whole d x K grid lives in one folder."""
@@ -59,13 +38,9 @@ def sweep_dir(base, run_id, sampler, T_true, variant="unweighted"):
 
 
 def resolve_sweep_dir(base, run_id, sampler, T_true, variant="unweighted"):
-    """The sweep_dir for this run if it has results, else the newest run that does."""
+    """The sweep_dir of this run if it has results, else None (never another run's)."""
     d = sweep_dir(base, run_id, sampler, T_true, variant)
-    if os.path.exists(os.path.join(d, "results.json")):
-        return d
-    pat = os.path.join(base, "*", sampler, variant, f"T{int(T_true)}", "results.json")
-    hits = sorted(glob.glob(pat))
-    return os.path.dirname(hits[-1]) if hits else None
+    return d if os.path.exists(os.path.join(d, "results.json")) else None
 
 
 def ckpt_path(data_dir, sampler, d, K, seed, variant="unweighted"):
@@ -185,7 +160,9 @@ def _save_cell(cfg, d, K, seed, proc, model, means_t, min_sep, R99, hall, used_s
         ckpt["flow"] = {"sigma_min": float(cfg.process.sigma_min),
                         "solver": str(cfg.process.solver)}
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    torch.save(ckpt, path)
+    tmp = f"{path}.tmp{os.getpid()}"
+    torch.save(ckpt, tmp)
+    os.replace(tmp, path)       # atomic: an interrupted save never leaves a half-written checkpoint
 
     # Cache the learned-sampler ground truth now (once), so every downstream (evaluate, T_true)
     # job loads it instead of re-running the N-seed forward pass. Same seeds evaluate will use.

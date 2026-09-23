@@ -35,7 +35,7 @@ TTRAIN=500
 SEED=0
 NSEEDS=3
 RADBASE=2.0
-RUN_ID=${RUN_ID:-slurm_${SLURM_ARRAY_JOB_ID}}   # one shared id for train + eval (submit.sh exports it)
+RUN_ID=${RUN_ID:-abc123}   # one shared id for train + eval (submit.sh exports it)
 
 # array index -> (process, d, K); Ks vary fastest so small cells come first
 i=$SLURM_ARRAY_TASK_ID

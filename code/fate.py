@@ -213,9 +213,8 @@ def train_fate_classifier(X, y, K, arch="mlp", hidden=512, depth=4, degree=3, ep
     """Fit one classifier on seeds X (n,d) with fate labels y in {-1, 0..K-1}.
 
     Parametric archs run `epochs` passes of mini-batches of size `batch`, but at least
-    `min_steps` gradient steps, so small anchor sets converge; with per-anchor weights `w`
-    the loss is the w-weighted mean cross-entropy. Non-parametric archs (knn, kernel) just
-    store the anchors.
+    `min_steps` gradient steps, so small anchor sets converge. Non-parametric archs (knn,
+    kernel) just store the anchors.
     """
     if arch == "altered_knn":
         return AlteredKNN(K, k, temperature, threshold, confidence).to(device).fit(X, y, w)   # calibrate() if threshold=auto
@@ -236,11 +235,7 @@ def train_fate_classifier(X, y, K, arch="mlp", hidden=512, depth=4, degree=3, ep
         perm = torch.randperm(n, device=device)
         for s in range(0, n - batch + 1, batch):
             i = perm[s:s + batch]
-            if w is None:
-                loss = nn.functional.cross_entropy(net(X[i]), yl[i])
-            else:
-                ce = nn.functional.cross_entropy(net(X[i]), yl[i], reduction="none")
-                loss = (w[i] * ce).sum() / w[i].sum()
+            loss = nn.functional.cross_entropy(net(X[i]), yl[i])
             opt.zero_grad(); loss.backward(); opt.step(); sched.step()
     net.eval()
     return net
@@ -254,8 +249,8 @@ def train_ensemble(X, y, K, spec: dict, device=None, w=None):
               k=spec.get("k", 10), bandwidth=spec.get("bandwidth", 1.0),
               temperature=spec.get("temperature", 0.1), threshold=spec.get("threshold", 0.5),
               confidence=spec.get("confidence", "entropy"), device=device)
-    if spec["arch"] == "altered_knn" or spec["arch"] in PARAMETRIC:
-        kw["w"] = w                      # parametric: weighted loss (None = unweighted)
+    if spec["arch"] == "altered_knn":
+        kw["w"] = w
     n_ens = 1 if spec["arch"] in NONPARAMETRIC else spec["ensemble"]   # deterministic -> no ensemble
     return [train_fate_classifier(X, y, K, seed=e, **kw) for e in range(n_ens)]
 

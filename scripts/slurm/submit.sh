@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 mkdir -p slurm logs
-export RUN_ID=${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)}
+export RUN_ID=${RUN_ID:-abc123}
 
 train=$(sbatch --parsable --export=ALL,RUN_ID="$RUN_ID" scripts/slurm/train.sbatch)
 echo "train array : $train   (run_id=$RUN_ID)"

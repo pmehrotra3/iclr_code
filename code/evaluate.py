@@ -2,10 +2,8 @@
 evaluate.py — Stage 2. The seed-fate atlas, run identically for every process (ddim, flow).
 
 Per (d, K) cell, per anchor budget:
-  1. Plant labelled anchors in DATA space (anchors.strategy: polar_weighted ->
-     core.polar_weighted_anchors, concentric farthest-point spheres with boundary-heavy
-     weights; ball -> core.ball_anchors, mode balls + a hallucination band;
-     core.altered_knn_anchors: mode-only weighted rings for altered_knn). No model involved.
+  1. Plant labelled anchors in DATA space (core.ball_anchors: mode balls + a hallucination
+     band; core.altered_knn_anchors: mode-only weighted rings). No model involved.
   2. Backtrack them to SEED space with the exact analytic field (proc.true_field_backtrack).
   3. Fit each predictor in classifier.models on the (seed, label) pairs -- knn, altered_knn,
      quadratic, polar3. altered_knn's confidence cut is calibrated on fresh seeds labelled by the
@@ -16,8 +14,16 @@ Per (d, K) cell, per anchor budget:
 
 The whole thing is repeated for every seed in core.seed_list(cfg) (each seed = its own mode
 placement, learned model and eval seeds) and every metric is reported as mean +- std over the
-seeds. Results go to output/<run_id>/<process>/T<T_true>/:
-    results.json           "results": one row per (seed, d, K, budget, model)
+seeds. Results go to output/<run_id>/<process>/<variant>/T<T_true>/:
+    cells/d<d>_K<K>_s<seed>.json   the rows of one (d, K, seed) cell -- THE record. A cell file
+                           that already holds a (budget, predictor) row is not recomputed
+                           (eval.force=true recomputes); a new budget or predictor adds only its
+                           own rows. Every row is independent of the others (fixed anchor seed,
+                           fixed fit seeds), so computing a cell in pieces gives the same rows.
+    results.json           rebuilt from ALL cell files of the run after every invocation, in
+                           (d, K, seed, budget, predictor) order, so a sweep evaluated in pieces
+                           gives the results.json of one big invocation:
+                           "results": one row per (seed, d, K, budget, model)
                            "aggregate": one row per (d, K, budget, model) with <metric> = mean
                            over seeds, <metric>_std = std (ddof=0), n_seeds
     results.csv            the aggregate (mean, std columns)
@@ -28,7 +34,7 @@ from __future__ import annotations
 import os
 import json
 import glob
-import shutil
+import fcntl
 import time
 import numpy as np
 import torch
@@ -73,7 +79,7 @@ def anchor_memory_gb(cfg, d, K):
     a = cfg.anchors
     b = max(budgets(cfg))
     f = 4 * d                                          # bytes per fp32 point
-    n_ball = b * K * (1.0 if a.get("strategy", "ball") == "polar_weighted" else 1 + float(a.shell_frac))
+    n_ball = b * K * (1 + float(a.shell_frac))
     _models = cfg.classifier.models
     _entries = _models.values() if OmegaConf.is_dict(_models) else _models
     need_altered = any(_spec(cfg, m)["arch"] == "altered_knn" for m in _entries)
@@ -116,11 +122,64 @@ def stratified_eval_idx(gt, K, n_total, seed):
     return torch.cat(idx).to(gt.device)
 
 
+def cell_path(out_dir, d, K, seed):
+    return os.path.join(out_dir, "cells", f"d{int(d)}_K{int(K)}_s{int(seed)}.json")
+
+
+def _load_cell(path):
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return json.load(f)["rows"]
+
+
+def _save_cell(path, rows):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump({"rows": rows}, f)
+    os.replace(tmp, path)                                   # atomic: a crash never leaves half a file
+
+
+def _key(r):
+    return int(r["n_per_mode"]), r["model"]
+
+
+def _specs(cfg):
+    # classifier.models may be a list (legacy) or a name->spec dict (composed per-method
+    # from conf/classifier/method/*.yaml). Iterate the entries either way.
+    _models = cfg.classifier.models
+    _entries = _models.values() if OmegaConf.is_dict(_models) else _models
+    return [_spec(cfg, m) for m in _entries]
+
+
+def row_order(cfg):
+    """(d, K, seed, budget, predictor in config order; unknown predictors after, by name)."""
+    names = [s["name"] for s in _specs(cfg)]
+    rank = lambda m: (names.index(m), m) if m in names else (len(names), m)
+    return lambda r: (int(r["d"]), int(r["K"]), int(r["seed"]), int(r["n_per_mode"]), rank(r["model"]))
+
+
+def wanted(cfg):
+    """The (budget, predictor) rows this invocation asks of every cell."""
+    return {(int(b), s["name"]) for b in budgets(cfg) for s in _specs(cfg)}
+
+
 def eval_one(cfg, d, K, seed, device):
-    """Evaluate one (d, K) cell for one repeat `seed`: every predictor at every anchor budget.
-    Returns result rows."""
+    """Evaluate one (d, K) cell for one repeat `seed`, resuming from its cell file: only the
+    (budget, predictor) rows it does not hold yet are computed. Returns every row of the cell
+    (cached and new); None when the cell has no checkpoint."""
     sampler = cfg.process.name
     variant = variant_of(cfg)
+    out_dir = sweep_dir(cfg.paths.output, cfg.run_id, sampler, cfg.process.T_true, variant)
+    cpath = cell_path(out_dir, d, K, seed)
+    want = wanted(cfg)
+    cached = _load_cell(cpath)
+    if bool(cfg.eval.get("force", False)):
+        cached = [r for r in cached if _key(r) not in want]
+    todo = want - {_key(r) for r in cached}
+    if not todo:
+        return cached
     path = ckpt_path(cfg.paths.checkpoints, sampler, d, K, seed, variant)
     if not os.path.exists(path):
         return None
@@ -155,12 +214,7 @@ def eval_one(cfg, d, K, seed, device):
     m_mode, m_hall = gt >= 0, gt == -1
     hall_gt = float(m_hall.float().mean())
 
-    # classifier.models may be a list (legacy) or a name->spec dict (composed per-method
-    # from conf/classifier/method/*.yaml). Iterate the entries either way.
-    _models = cfg.classifier.models
-    _entries = _models.values() if OmegaConf.is_dict(_models) else _models
-    specs = [_spec(cfg, m) for m in _entries]
-    need_altered = any(s["arch"] == "altered_knn" for s in specs)
+    all_specs = _specs(cfg)
 
     # seeds labelled by the EXACT score at T_true: altered_knn's calibration set
     X_cal = proc.seeds(int(a.n_calibrate), d, seed + 2)
@@ -170,26 +224,23 @@ def eval_one(cfg, d, K, seed, device):
 
     rows = []
     for b in budgets(cfg):
-        # step 1 + 2: plant in data space, backtrack to seed space with the exact field
-        wb = None                                   # per-anchor weights (polar_weighted only)
-        if a.get("strategy", "ball") == "polar_weighted":
-            pw = a.polar_weighted
-            P, y, wb = core.polar_weighted_anchors(
-                means_t, R99, int(b), int(pw.n_spheres), pw.get("n_per_sphere", None),
-                float(pw.r_max), float(pw.fps_pool), str(pw.weight), float(pw.w_min),
-                sigma=sigma, seed=int(a.seed), device=device)
-        else:
-            P, y = core.ball_anchors(means_t, R99, int(b), float(a.shell_frac), float(a.shell_sigma),
-                                     sigma, int(a.seed), device)
-        A = proc_true.true_field_backtrack(P, inplace=True)   # P is overwritten: one (n, d) tensor, not two
-        del P
+        specs = [s for s in all_specs if (int(b), s["name"]) in todo]
+        if not specs:
+            continue
+        need_altered = any(s["arch"] == "altered_knn" for s in specs)
         # scored seeds: all n_eval, or (eval_per_anchor) a stratified subset of the pool sized
-        # per_anchor * (anchors of this budget) -- the same subset for every predictor
+        # per_anchor * (ball + shell anchors) -- the same subset for every predictor
         if per_anchor:
-            sel = stratified_eval_idx(gt, K, int(round(float(per_anchor) * A.shape[0])), seed + 3)
+            n_ball = K * (int(b) + max(1, int(round(float(a.shell_frac) * int(b)))))
+            sel = stratified_eval_idx(gt, K, int(round(float(per_anchor) * n_ball)), seed + 3)
             X_b, gt_b = X_te[sel], gt[sel]
         else:
             X_b, gt_b = X_te, gt
+        # step 1 + 2: plant in data space, backtrack to seed space with the exact field
+        P, y = core.ball_anchors(means_t, R99, int(b), float(a.shell_frac), float(a.shell_sigma),
+                                 sigma, int(a.seed), device)
+        A = proc_true.true_field_backtrack(P, inplace=True)   # P is overwritten: one (n, d) tensor, not two
+        del P
         Aa = ya = wa = None
         if need_altered:
             rg = a.altered_knn
@@ -203,7 +254,7 @@ def eval_one(cfg, d, K, seed, device):
             t0 = time.time()
             altered = spec["arch"] == "altered_knn"
             nets = (fate.train_ensemble(Aa, ya, K, spec, device, w=wa) if altered
-                    else fate.train_ensemble(A, y, K, spec, device, w=wb))
+                    else fate.train_ensemble(A, y, K, spec, device))
             if altered and spec.get("threshold") == "auto":
                 for net in nets:
                     net.calibrate(X_cal, y_cal)
@@ -216,10 +267,12 @@ def eval_one(cfg, d, K, seed, device):
                          "weights": w_row,
                          "secs": round(time.time() - t0, 1), **met})
             del nets
-        del A, Aa, X_b, gt_b, wb                               # release this budget's anchors before the next (bigger) one
+        del A, Aa, X_b, gt_b                               # release this budget's anchors before the next (bigger) one
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
+    rows = sorted(cached + rows, key=row_order(cfg))
+    _save_cell(cpath, rows)
     return rows
 
 
@@ -288,29 +341,32 @@ def run(cfg):
             print(line)
 
     if bool(cfg.eval.get("part", False)):
-        # one part per d-subset (scripts/main.sh fans phase 2 out per d); `merge` joins them
-        os.makedirs(os.path.join(out_dir, "parts"), exist_ok=True)
-        tag = "d" + "_".join(str(int(d)) for d in cfg.sweep.d)
-        pj = os.path.join(out_dir, "parts", f"{tag}.json")
-        with open(pj, "w") as f:
-            json.dump({"sampler": sampler, "variant": variant, "run_id": cfg.run_id,
-                       "d": [int(d) for d in cfg.sweep.d], "seeds": seeds, "results": results}, f)
-        print(f"[eval:{sampler}] wrote part {pj} ({len(results)} rows); run stages=[merge] to combine")
-        return {"part": pj, "n_results": len(results)}
-
-    return _write_results(cfg, out_dir, sampler, variant, primary, seeds, results)
+        # scripts/main.sh fans evaluate out per d and runs `merge` once afterwards
+        print(f"[eval:{sampler}] {len(results)} rows in {out_dir}/cells; run stages=[merge] to rebuild results.json")
+        return {"cells": os.path.join(out_dir, "cells"), "n_results": len(results)}
+    return merge(cfg)
 
 
-def _write_results(cfg, out_dir, sampler, variant, primary, seeds, results):
+def collect(cfg, out_dir):
+    """Every row of every cell file of the run, in single-invocation order."""
+    results = []
+    for p in glob.glob(os.path.join(out_dir, "cells", "*.json")):
+        results += _load_cell(p)
+    return sorted(results, key=row_order(cfg))
+
+
+def _write_results(cfg, out_dir, sampler, variant, primary, results):
     """Aggregate the per-seed rows and write results.json / results.csv / results_per_seed.csv."""
     agg = aggregate(results)
+    seeds = sorted({int(r["seed"]) for r in results})
     js = os.path.join(out_dir, "results.json")
     with open(js, "w") as f:
         json.dump({"sampler": sampler, "variant": variant, "weighted": variant == "weighted",
                    "run_id": cfg.run_id,
-                   "config_sweep": {"d": sorted({int(r["d"]) for r in results}), "K": list(cfg.sweep.K),
-                                    "anchors": budgets(cfg), "T_true": int(cfg.process.T_true),
-                                    "seeds": seeds},
+                   "config_sweep": {"d": sorted({int(r["d"]) for r in results}),
+                                    "K": sorted({int(r["K"]) for r in results}),
+                                    "anchors": sorted({int(r["n_per_mode"]) for r in results}),
+                                    "T_true": int(cfg.process.T_true), "seeds": seeds},
                    "primary": primary, "metrics": list(fate.METRICS),
                    "results": results, "aggregate": agg}, f, indent=2)
 
@@ -338,26 +394,22 @@ def _write_results(cfg, out_dir, sampler, variant, primary, seeds, results):
 
 
 def merge(cfg):
-    """Join the per-d part files written by evaluate with eval.part=true (one phase-2 job per
-    (process, variant, T, d) in scripts/main.sh) into the usual results.json / csv files, then
-    remove the parts. Rows are ordered by (d, K, seed) so the output matches a single-job run."""
+    """Rebuild results.json / csv from every cell file of the run (output/<run_id>/<process>/
+    <variant>/T<T>/cells/), whichever invocations wrote them. Locked, so the parallel evaluate
+    jobs of scripts/main.sh can each call it."""
     sampler = cfg.process.name
     variant = variant_of(cfg)
     out_dir = sweep_dir(cfg.paths.output, cfg.run_id, sampler, cfg.process.T_true, variant)
-    parts = sorted(glob.glob(os.path.join(out_dir, "parts", "*.json")))
-    if not parts:
-        raise FileNotFoundError(f"[merge:{sampler}] no part files under {out_dir}/parts")
+    os.makedirs(out_dir, exist_ok=True)
     _models = cfg.classifier.models
     _names = list(_models.keys()) if OmegaConf.is_dict(_models) else [str(m) for m in _models]
     primary = str(cfg.classifier.get("primary", _names[0] if _names else ""))
-    results, seeds, ds = [], None, []
-    for pj in parts:
-        with open(pj) as f:
-            p = json.load(f)
-        results += p["results"]; seeds = p["seeds"]; ds += p["d"]
-    results.sort(key=lambda r: (r["d"], r["K"], r["seed"]))
-    print(f"[merge:{sampler}/{variant}] T={int(cfg.process.T_true)}: {len(parts)} parts, "
-          f"d={sorted(ds)}, {len(results)} rows")
-    out = _write_results(cfg, out_dir, sampler, variant, primary, seeds, results)
-    shutil.rmtree(os.path.join(out_dir, "parts"))
-    return out
+    with open(os.path.join(out_dir, ".lock"), "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        results = collect(cfg, out_dir)
+        if not results:
+            raise FileNotFoundError(f"[merge:{sampler}] no cell files under {out_dir}/cells")
+        cells = {(r["d"], r["K"], r["seed"]) for r in results}
+        print(f"[merge:{sampler}/{variant}] T={int(cfg.process.T_true)}: {len(cells)} cells, "
+              f"d={sorted({c[0] for c in cells})}, {len(results)} rows")
+        return _write_results(cfg, out_dir, sampler, variant, primary, results)

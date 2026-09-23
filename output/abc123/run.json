@@ -1,0 +1,133 @@
+{
+  "config": {
+    "data": {
+      "mass_q": 0.99,
+      "name": "gmm",
+      "sigma": 0.1,
+      "radius": 2.0,
+      "m_mult": 1.5
+    },
+    "train": {
+      "base_steps": 30000,
+      "lr": 0.001,
+      "lr_min": 1e-05,
+      "grad_clip": 1.0,
+      "ema_decay": 0.999,
+      "ema_warmup": 1000,
+      "batch": 512,
+      "small_max_d": 64,
+      "width": {
+        "small": 256,
+        "large": 1024
+      },
+      "n_train": 100000,
+      "cuda_graph": true,
+      "probe_n": 10000,
+      "hall_target": 0.015,
+      "step_growth": 1.7,
+      "max_attempts": 2
+    },
+    "eval": {
+      "n_eval_per_mode": 50000,
+      "n_eval": null,
+      "eval_per_anchor": null
+    },
+    "anchors": {
+      "seed": 0,
+      "shell_frac": 0.5,
+      "shell_sigma": 2.0,
+      "n_calibrate": 5000,
+      "altered_knn": {
+        "n_rings": 5,
+        "r_max": 1.5,
+        "weight": "linear",
+        "w_min": 0.2
+      }
+    }
+  },
+  "process": {
+    "ddim": {
+      "T_train": 500,
+      "name": "ddim",
+      "beta_min": 0.0001,
+      "beta_max": 0.02,
+      "true_order": "heun"
+    }
+  },
+  "predictors": {
+    "knn": {
+      "hidden": 256,
+      "depth": 4,
+      "degree": 3,
+      "epochs": 30,
+      "batch": 2048,
+      "lr": 0.003,
+      "weight_decay": 0.0001,
+      "min_steps": 3000,
+      "ensemble": 3,
+      "k": 10,
+      "bandwidth": 1.0,
+      "temperature": 0.1,
+      "threshold": "auto",
+      "confidence": "entropy",
+      "name": "knn",
+      "arch": "knn"
+    },
+    "altered_knn": {
+      "hidden": 256,
+      "depth": 4,
+      "degree": 3,
+      "epochs": 30,
+      "batch": 2048,
+      "lr": 0.003,
+      "weight_decay": 0.0001,
+      "min_steps": 3000,
+      "ensemble": 3,
+      "k": 10,
+      "bandwidth": 1.0,
+      "temperature": 0.1,
+      "threshold": "auto",
+      "confidence": "entropy",
+      "name": "altered_knn",
+      "arch": "altered_knn"
+    },
+    "quadratic": {
+      "hidden": 256,
+      "depth": 4,
+      "degree": 3,
+      "epochs": 30,
+      "batch": 2048,
+      "lr": 0.003,
+      "weight_decay": 0.0001,
+      "min_steps": 3000,
+      "ensemble": 3,
+      "k": 10,
+      "bandwidth": 1.0,
+      "temperature": 0.1,
+      "threshold": "auto",
+      "confidence": "entropy",
+      "name": "quadratic",
+      "arch": "quadratic"
+    },
+    "polar3": {
+      "hidden": 256,
+      "depth": 4,
+      "degree": 3,
+      "epochs": 30,
+      "batch": 2048,
+      "lr": 0.003,
+      "weight_decay": 0.0001,
+      "min_steps": 3000,
+      "ensemble": 3,
+      "k": 10,
+      "bandwidth": 1.0,
+      "temperature": 0.1,
+      "threshold": "auto",
+      "confidence": "entropy",
+      "name": "polar3",
+      "arch": "polar"
+    }
+  },
+  "created": "2026-09-23 18:09:25",
+  "updated": "2026-09-23 18:17:34"
+}

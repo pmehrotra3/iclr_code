@@ -41,18 +41,20 @@ class FlowOTProcess(Process):
         torch.manual_seed(seed)
         model = self.build_model(d)
         oms = 1.0 - self.sigma_min
+        g = core.step_generator(seed, self.device)
         draw = core._minibatch(self.means_t, self.variance, batch, self.n_train(), seed, self.device,
-                               self.weights)
+                               self.weights, g)
 
         def step():
             x1 = draw()                                                    # data endpoint
-            x0 = torch.randn(batch, d, device=self.device)
-            t = torch.rand(batch, device=self.device)                      # U[0,1]
+            x0 = torch.randn(batch, d, generator=g, device=self.device)
+            t = torch.rand(batch, generator=g, device=self.device)         # U[0,1]
             psi = (1 - oms * t)[:, None] * x0 + t[:, None] * x1            # Eq. 22
             target = x1 - oms * x0                                         # Eq. 23
             ti = (t * (self.T - 1)).round().long().clamp(0, self.T - 1)    # embedding index
             return ((model(psi, ti) - target) ** 2).mean()
 
+        step.generator = g
         return model, step
 
     def train_model(self, K, d, n_steps, lr, batch, seed):

@@ -1,0 +1,148 @@
+==============================================================
+ sweep 2026-09-23_04-02-23 : 4 GPU(s) [0 1 2 3] x 1 jobs, fanned out per (process,d,K)
+ processes=[ddim flow]  d=[2,4,8,16,32,64,128,256,512]  K=[2 4 8 16]  T_true=[100 200 500]  T_train=500
+ seeds: 3 from 0 (stride 100)  anchors=[20000,50000,100000]
+ radius(base)=2.0 (scaled by sqrt(d/2))  device=cuda
+ data=gmm  weighted=[false true]  (predictors set in conf/config.yaml)
+==============================================================
+-- phase 1: train (one job per cell, 3 seeds each, 1 jobs per GPU) --
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_unweighted_train_d2_K2.log
+>>> [gpu 1] 2026-09-23_04-02-23_ddim_unweighted_train_d2_K4.log
+>>> [gpu 2] 2026-09-23_04-02-23_ddim_unweighted_train_d2_K8.log
+>>> [gpu 3] 2026-09-23_04-02-23_ddim_unweighted_train_d2_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d2_K16.log
+>>> [gpu 3] 2026-09-23_04-02-23_ddim_unweighted_train_d4_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d2_K2.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_unweighted_train_d4_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d4_K2.log
+>>> [gpu 3] 2026-09-23_04-02-23_ddim_unweighted_train_d4_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d2_K4.log
+>>> [gpu 1] 2026-09-23_04-02-23_ddim_unweighted_train_d4_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d2_K8.log
+>>> [gpu 2] 2026-09-23_04-02-23_ddim_unweighted_train_d8_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d4_K4.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_unweighted_train_d8_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d8_K2.log
+>>> [gpu 2] 2026-09-23_04-02-23_ddim_unweighted_train_d8_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d4_K8.log
+>>> [gpu 3] 2026-09-23_04-02-23_ddim_unweighted_train_d8_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d8_K4.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_unweighted_train_d16_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d16_K2.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_unweighted_train_d16_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d4_K16.log
+>>> [gpu 1] 2026-09-23_04-02-23_ddim_unweighted_train_d16_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d8_K8.log
+>>> [gpu 2] 2026-09-23_04-02-23_ddim_unweighted_train_d16_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d16_K4.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_unweighted_train_d32_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d8_K16.log
+>>> [gpu 3] 2026-09-23_04-02-23_ddim_unweighted_train_d32_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d16_K8.log
+>>> [gpu 1] 2026-09-23_04-02-23_ddim_unweighted_train_d32_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d32_K2.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_unweighted_train_d32_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d16_K16.log
+>>> [gpu 2] 2026-09-23_04-02-23_ddim_unweighted_train_d64_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d32_K4.log
+>>> [gpu 3] 2026-09-23_04-02-23_ddim_unweighted_train_d64_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d32_K8.log
+>>> [gpu 1] 2026-09-23_04-02-23_ddim_unweighted_train_d64_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d64_K2.log
+>>> [gpu 2] 2026-09-23_04-02-23_ddim_unweighted_train_d64_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d32_K16.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_unweighted_train_d128_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d64_K4.log
+>>> [gpu 3] 2026-09-23_04-02-23_ddim_unweighted_train_d128_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d64_K8.log
+>>> [gpu 1] 2026-09-23_04-02-23_ddim_unweighted_train_d128_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d64_K16.log
+>>> [gpu 2] 2026-09-23_04-02-23_ddim_unweighted_train_d128_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d128_K2.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_unweighted_train_d256_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d128_K4.log
+>>> [gpu 3] 2026-09-23_04-02-23_ddim_unweighted_train_d256_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d128_K8.log
+>>> [gpu 1] 2026-09-23_04-02-23_ddim_unweighted_train_d256_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d128_K16.log
+>>> [gpu 2] 2026-09-23_04-02-23_ddim_unweighted_train_d256_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d256_K2.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_unweighted_train_d512_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d256_K4.log
+>>> [gpu 3] 2026-09-23_04-02-23_ddim_unweighted_train_d512_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d256_K16.log
+>>> [gpu 2] 2026-09-23_04-02-23_ddim_unweighted_train_d512_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d256_K8.log
+>>> [gpu 1] 2026-09-23_04-02-23_ddim_unweighted_train_d512_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d512_K2.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d2_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d2_K2.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d2_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d2_K4.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d2_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d2_K8.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d2_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d2_K16.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d4_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d4_K2.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d4_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d4_K4.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d4_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d4_K8.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d4_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d4_K16.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d8_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d8_K2.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d8_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d8_K4.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d8_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d8_K8.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d8_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d8_K16.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d16_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d16_K2.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d16_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d16_K4.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d16_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d16_K8.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d16_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d16_K16.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d32_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d32_K2.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d32_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d32_K4.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d32_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d32_K8.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d32_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d32_K16.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d64_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d64_K2.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d64_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d64_K4.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d64_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d64_K8.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d64_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d64_K16.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d128_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d512_K4.log
+>>> [gpu 3] 2026-09-23_04-02-23_ddim_weighted_train_d128_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d128_K2.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d128_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d128_K4.log
+>>> [gpu 3] 2026-09-23_04-02-23_ddim_weighted_train_d128_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d128_K8.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d256_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d128_K16.log
+>>> [gpu 3] 2026-09-23_04-02-23_ddim_weighted_train_d256_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_unweighted_train_d512_K8.log
+>>> [gpu 2] 2026-09-23_04-02-23_ddim_weighted_train_d256_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d256_K2.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d256_K16.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d256_K4.log
+>>> [gpu 3] 2026-09-23_04-02-23_ddim_weighted_train_d512_K2.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d256_K8.log
+>>> [gpu 2] 2026-09-23_04-02-23_ddim_weighted_train_d512_K4.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d256_K16.log
+>>> [gpu 0] 2026-09-23_04-02-23_ddim_weighted_train_d512_K8.log
+  [ok]   2026-09-23_04-02-23_ddim_weighted_train_d512_K2.log
+>>> [gpu 3] 2026-09-23_04-02-23_ddim_weighted_train_d512_K16.log

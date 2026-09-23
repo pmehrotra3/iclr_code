@@ -10,18 +10,23 @@
 #   seeds    : repeats           (NSEEDS) -> n_seeds  (base SEED; seeds SEED, SEED+100, ...)
 #              every metric is reported as mean +- std over them
 #
-# One shared timestamp per invocation. Output: output/<timestamp>/<process>/<unweighted|weighted>/T<T>/...
+# RUN names the run (default abc123). Everything lands in output/$RUN/ -- checkpoints/,
+# <process>/<variant>/T<T>/, logs/, run.json, history.log -- and re-running with the same RUN
+# resumes it: finished checkpoints and evaluation rows are skipped, so a sweep done in several
+# pieces (DIMS="16", then DIMS="32", then NSEEDS=5 ...) ends in the same files as one
+# invocation. See code/runstate.py.
 #
 # Three phases, each fanned out across ALL GPUs (never one-process-per-GPU):
 #   1) TRAIN    : ONE job per (process, d, K) cell, training all NSEEDS repeats of the cell at
 #                 once (one CUDA graph, one branch per seed -- a single small model cannot fill
-#                 a GPU) -> checkpoints/<process>/<variant>/checkpoints/ + gt_cache/  (distinct files per seed)
+#                 a GPU) -> output/$RUN/checkpoints/<process>/<variant>/checkpoints/ + gt_cache/
+#                 (each seed has its own RNG, so grouping does not change the models)
 #   2) EVAL     : one job per (process, variant, T, d), reusing the cached checkpoints AND
-#                 ground truth for every seed. Each job writes a part file; EVAL_JOBS_PER_GPU
-#                 of them share a GPU (a single eval job is launch-bound and leaves most of
-#                 the GPU idle, so several per GPU overlap).
-#   3) MERGE+VIZ: one light job per (process, variant, T) joins the parts into results.json
-#                 (mean +- std aggregate) and draws the figures.
+#                 ground truth for every seed. Each job writes its cell files
+#                 (output/$RUN/<process>/<variant>/T<T>/cells/); EVAL_JOBS_PER_GPU of them share
+#                 a GPU (a single eval job is launch-bound, so several per GPU overlap).
+#   3) MERGE+VIZ: one light job per (process, variant, T) rebuilds results.json from EVERY cell
+#                 file of the run (mean +- std aggregate) and draws the figures.
 # NGPU * JOBS_PER_GPU jobs run at a time, each pinned to one GPU via CUDA_VISIBLE_DEVICES; a
 # failed job is re-run RETRIES times before it is reported.
 #
@@ -30,7 +35,11 @@
 #              separate checkpoints/caches/results under <process>/<unweighted|weighted>/)
 #   predictors to run are set in conf/config.yaml (not here)
 #
-#   ./scripts/main.sh
+#   ./scripts/main.sh                           # everything under run abc123 (resumes it)
+#   RUN=foo ./scripts/main.sh                   # a different run (RUN_ID= also accepted)
+#   DIMS="512" ./scripts/main.sh                # later: add d=512 to the same run (the rest is not redone)
+#   TRAIN_ONLY=true ./scripts/main.sh           # phase 1 only (train every cell)
+#   SKIP_TRAIN=true ./scripts/main.sh           # phases 2-3 only, on the existing checkpoints
 #   DEVICE=cpu NGPU=2 DIMS="2" KS="2 4" TS="200" ANCHORS="[2000,10000]" ./scripts/main.sh
 
 set -o pipefail
@@ -39,7 +48,7 @@ cd "$(dirname "$0")/.."
 export ATLAS_ROOT="${ATLAS_ROOT:-$PWD}"                        # checkpoints/ and output/ live here
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"  # eval holds several
                                                                 # multi-GB anchor tensors; avoid fragmentation
-LOGDIR=${LOGDIR:-logs}
+RUN=${RUN:-${RUN_ID:-abc123}}                                   # the run name: output/$RUN/
 
 PROCESSES=${PROCESSES:-"ddim flow"}
 DIMS=${DIMS:-"2 4 8 16 32 64 128 256"}                         # dimensions (d=1024 is hours per cell; add it explicitly)
@@ -56,7 +65,7 @@ JOBS_PER_GPU=${JOBS_PER_GPU:-1}                                 # concurrent tra
                                                                 # CUDA streams; >1 disables those streams (see
                                                                 # core.run_optimizers) and time-slices instead
 RETRIES=${RETRIES:-1}                                           # re-run a failed job this many times
-FORCE=${FORCE:-true}                                            # false: keep existing checkpoints, train only missing cells
+FORCE=${FORCE:-false}                                           # true: retrain cells that already have checkpoints
 EVAL_JOBS_PER_GPU=${EVAL_JOBS_PER_GPU:-3}                       # concurrent eval jobs per GPU: each is launch-bound
                                                                 # (small classifiers, batch 2048), so several overlap;
                                                                 # ~8 GB each at d=512/K=16, 49 GB cards take 3-4
@@ -73,6 +82,8 @@ if [ -z "${PY:-}" ]; then
   else echo "no python3/python on PATH" >&2; exit 1; fi
 fi
 EXTRA=${EXTRA:-}                                                # extra overrides, appended verbatim
+TRAIN_ONLY=${TRAIN_ONLY:-false}                                 # true: stop after phase 1 (train)
+SKIP_TRAIN=${SKIP_TRAIN:-false}                                 # true: skip phase 1, reuse existing checkpoints
 
 if [ -z "${NGPU:-}" ]; then
   command -v nvidia-smi >/dev/null 2>&1 && NGPU=$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')
@@ -85,8 +96,9 @@ if [ -n "${GPUS:-}" ]; then GPU_IDS=($GPUS); NGPU=${#GPU_IDS[@]}
 else GPU_IDS=(); for ((g0=0; g0<NGPU; g0++)); do GPU_IDS+=("$g0"); done; fi
 
 SORTFLAG=-n; [ "$ORDER" = desc ] && SORTFLAG=-rn
+STAMP=$(date +%Y-%m-%d_%H-%M-%S)                                # names this invocation's logs only
+LOGDIR=${LOGDIR:-output/$RUN/logs}
 mkdir -p "$LOGDIR"
-STAMP=$(date +%Y-%m-%d_%H-%M-%S)
 DLIST="[$(echo $DIMS | tr ' ' ',')]"                           # "2 4 8" -> "[2,4,8]"
 
 # ---- run the commands in JOBS[] ("logname|override args") across NGPU GPUs, $1 jobs per GPU ----
@@ -119,7 +131,7 @@ run_pool() {
 }
 
 echo "=============================================================="
-echo " sweep $STAMP : $NGPU GPU(s) [${GPU_IDS[*]}] x $JOBS_PER_GPU jobs, fanned out per (process,d,K)"
+echo " run $RUN (invocation $STAMP) : $NGPU GPU(s) [${GPU_IDS[*]}] x $JOBS_PER_GPU jobs, fanned out per (process,d,K)"
 echo " processes=[$PROCESSES]  d=$DLIST  K=[$KS]  T_true=[$TS]  T_train=$TTRAIN"
 echo " seeds: $NSEEDS from $SEED (stride 100)  anchors=$ANCHORS"
 echo " radius(base)=$RADBASE (scaled by sqrt(d/2))  device=$DEVICE"
@@ -130,6 +142,7 @@ vname() { [ "$1" = true ] && echo weighted || echo unweighted; }   # data.weight
 
 # ---- phase 1: train, ONE job per (process, variant, d, K) cell (all seeds together) ----
 # Smallest cells first so results (and phase 2 for them) appear early; ORDER=desc for biggest-first.
+if [ "$SKIP_TRAIN" != true ]; then
 echo "-- phase 1: train (one job per cell, $NSEEDS seeds each, $JOBS_PER_GPU jobs per GPU) --"
 STREAMS=true; [ "$JOBS_PER_GPU" -gt 1 ] && STREAMS=false        # see core.run_optimizers
 JOBS=()
@@ -137,15 +150,22 @@ for P in $PROCESSES; do
   for W in $WEIGHTED; do V=$(vname $W)
     for D in $(echo $DIMS | tr ' ' '\n' | sort $SORTFLAG); do
       for K in $(echo $KS | tr ' ' '\n' | sort $SORTFLAG); do
-        JOBS+=("${STAMP}_${P}_${V}_train_d${D}_K${K}.log|process=$P data=$DATASET data.weighted=$W process.T_train=$TTRAIN sweep.d=[$D] sweep.K=[$K] seed=$SEED n_seeds=$NSEEDS data.radius=$RADBASE stages=[train] train.force_retrain=$FORCE train.graph_streams=$STREAMS run_id=$STAMP $EXTRA")
+        JOBS+=("${STAMP}_${P}_${V}_train_d${D}_K${K}.log|process=$P data=$DATASET data.weighted=$W process.T_train=$TTRAIN sweep.d=[$D] sweep.K=[$K] seed=$SEED n_seeds=$NSEEDS data.radius=$RADBASE stages=[train] train.force_retrain=$FORCE train.graph_streams=$STREAMS run_id=$RUN $EXTRA")
       done
     done
   done
 done
 run_pool "$JOBS_PER_GPU"
+fi
+if [ "$TRAIN_ONLY" = true ]; then
+  echo "=============================================================="
+  echo " TRAIN_ONLY: phase 1 done -> output/$RUN/checkpoints/<process>/<variant>/checkpoints/"
+  echo "=============================================================="
+  exit 0
+fi
 
 # ---- phase 2: evaluate, one job per (process, variant, T, d), several per GPU ----
-# Every job writes output/<stamp>/<P>/<V>/T<T>/parts/d<D>.json (eval.part=true); biggest d
+# Every job writes output/$RUN/<P>/<V>/T<T>/cells/d<D>_K<K>_s<seed>.json (eval.part=true); biggest d
 # first so the long jobs start early and the small ones fill in behind them.
 echo "-- phase 2: evaluate (one job per (process, variant, T, d), $EVAL_JOBS_PER_GPU jobs per GPU) --"
 KLIST="[$(echo $KS | tr ' ' ',')]"
@@ -154,25 +174,25 @@ for D in $(echo $DIMS | tr ' ' '\n' | sort -rn); do
   for P in $PROCESSES; do
     for W in $WEIGHTED; do V=$(vname $W)
       for T in $TS; do
-        JOBS+=("${STAMP}_${P}_${V}_T${T}_eval_d${D}.log|process=$P data=$DATASET data.weighted=$W process.T_train=$TTRAIN process.T_true=$T sweep.d=[$D] sweep.K=$KLIST sweep.anchors=$ANCHORS seed=$SEED n_seeds=$NSEEDS data.radius=$RADBASE stages=[evaluate] eval.part=true train.force_retrain=false run_id=$STAMP $EXTRA")
+        JOBS+=("${STAMP}_${P}_${V}_T${T}_eval_d${D}.log|process=$P data=$DATASET data.weighted=$W process.T_train=$TTRAIN process.T_true=$T sweep.d=[$D] sweep.K=$KLIST sweep.anchors=$ANCHORS seed=$SEED n_seeds=$NSEEDS data.radius=$RADBASE stages=[evaluate] eval.part=true train.force_retrain=false run_id=$RUN $EXTRA")
       done
     done
   done
 done
 run_pool "$EVAL_JOBS_PER_GPU"
 
-# ---- phase 3: merge the parts + visualize, one light job per (process, variant, T) ----
+# ---- phase 3: merge the cells + visualize, one light job per (process, variant, T) ----
 echo "-- phase 3: merge + visualize --"
 JOBS=()
 for P in $PROCESSES; do
   for W in $WEIGHTED; do V=$(vname $W)
     for T in $TS; do
-      JOBS+=("${STAMP}_${P}_${V}_T${T}.log|process=$P data=$DATASET data.weighted=$W process.T_train=$TTRAIN process.T_true=$T sweep.d=$DLIST sweep.K=$KLIST sweep.anchors=$ANCHORS seed=$SEED n_seeds=$NSEEDS data.radius=$RADBASE stages=[merge,visualize] train.force_retrain=false run_id=$STAMP $EXTRA")
+      JOBS+=("${STAMP}_${P}_${V}_T${T}.log|process=$P data=$DATASET data.weighted=$W process.T_train=$TTRAIN process.T_true=$T sweep.d=$DLIST sweep.K=$KLIST sweep.anchors=$ANCHORS seed=$SEED n_seeds=$NSEEDS data.radius=$RADBASE stages=[merge,visualize] train.force_retrain=false run_id=$RUN $EXTRA")
     done
   done
 done
 run_pool "$EVAL_JOBS_PER_GPU"
 
 echo "=============================================================="
-echo " sweep complete -> output/$STAMP/<process>/<unweighted|weighted>/T<T>/"
+echo " sweep complete -> output/$RUN/<process>/<unweighted|weighted>/T<T>/"
 echo "=============================================================="

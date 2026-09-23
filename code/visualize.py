@@ -39,7 +39,7 @@ def _load(cfg):
     if d is None:
         raise FileNotFoundError(
             f"no results found for {cfg.process.name}/{variant_of(cfg)} T={cfg.process.T_true} "
-            f"under {cfg.paths.output}")
+            f"under {cfg.paths.output}/{cfg.run_id}")
     with open(os.path.join(d, "results.json")) as f:
         return json.load(f), d
 

@@ -1,0 +1,3 @@
+2026-09-23_18-09-25  pid=1720086  stages=[train]  run_id=abc123 process=ddim data.weighted=false stages=[train] sweep.d=[2,4,8,16,32,64,128,256,512] sweep.K=[2,4,8,16,32] n_seeds=3 device=cuda
+2026-09-23_18-12-34  pid=1720529  stages=[train]  run_id=abc123 data.weighted=false stages=[train] sweep.d=[2,4,8,16,32,64,128,256] sweep.K=[2,4,8,16,32] n_seeds=3 device=cuda
+2026-09-23_18-17-34  pid=1720740  stages=[train]  run_id=abc123 data.weighted=true stages=[train] sweep.d=[2,4,8,16,32,64,128,256] sweep.K=[2,4,8,16,32] n_seeds=3 device=cuda
