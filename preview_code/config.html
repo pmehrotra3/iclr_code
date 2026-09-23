@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings and setup: conf/ · iclr_code explained</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="pygments.css">
+</head>
+<body>
+<header class="topbar"><div class="topbar-inner">
+  <a class="brand" href="index.html">iclr_code <span>explained</span></a>
+  <nav class="nav"><a href="index.html">Start</a><span class="sep">|</span><a href="config.html" class="here">Settings</a><a href="main.html">main &amp; runstate</a><span class="sep">|</span><a href="core.html">core.py</a><a href="processes.html">processes/</a><span class="sep">|</span><a href="train.html">train.py</a><a href="evaluate.html">evaluate.py</a><a href="fate.html">fate.py</a><a href="visualize.html">visualize.py</a><span class="sep">|</span><a href="combine.html">combine.py</a><a href="rank_probe.html">rank_probe.py</a><span class="sep">|</span><a href="scripts.html">scripts/</a><a href="tests.html">tests</a></nav>
+</div></header>
+<main class="page">
+<div class="hero"><div class="kicker">configuration</div><h1>Settings and setup: conf/</h1><p class="lede">Every knob of the experiment, where it lives and what it does.</p></div><div class="prose">
+<p>Nothing in the code has a hard-coded experiment setting: everything is read from
+<code>conf/</code> through <b>Hydra</b>. <code>conf/config.yaml</code> picks one file from each
+folder ("group"); any value can be changed on the command line without editing a file:</p>
+<div class="formula">python code/main.py process=flow                       # pick another file of a group
+python code/main.py sweep.d=[16,64] sweep.K=[4,8]       # change values
+python code/main.py train.lr=5e-4 run_id=lr_test        # a result-changing setting → a new run_id</div>
+<h3>The settings you are most likely to touch</h3>
+<div class="tablewrap"><table>
+<tr><th>setting</th><th>default</th><th>effect</th></tr>
+<tr><td><code>sweep.d</code>, <code>sweep.K</code></td><td>[2], [2,4,8,16]</td><td>which cells to compute</td></tr>
+<tr><td><code>sweep.anchors</code></td><td>[20000,50000,100000]</td><td>anchor budgets per mode</td></tr>
+<tr><td><code>n_seeds</code></td><td>3</td><td>independent repeats (mean ± std)</td></tr>
+<tr><td><code>process</code></td><td>ddim</td><td>ddim or flow</td></tr>
+<tr><td><code>process.T_train</code> / <code>T_true</code></td><td>500 / 200</td><td>steps of the learned / exact sampler</td></tr>
+<tr><td><code>data.weighted</code></td><td>false</td><td>unequal mixing weights</td></tr>
+<tr><td><code>run_id</code></td><td>abc123</td><td>the name of the run folder</td></tr>
+<tr><td><code>stages</code></td><td>[train, evaluate, visualize]</td><td>what to run</td></tr>
+<tr><td><code>device</code></td><td>auto</td><td>cpu, cuda, or auto</td></tr>
+</table></div>
+<p>Settings that change results are locked per run (see <a href="main.html#check_and_record">runstate</a>):
+change them together with a new <code>run_id</code>.</p>
+</div><section class="file" id="file-conf-config-yaml"><div class="filehead"><h2><code>conf/config.yaml</code></h2><span class="meta">45 lines · shown in full</span></div><nav class="toc"><a href="#defaults">defaults: one file per group</a><a href="#classifier-classifier-models-knn">The predictors to run</a><a href="#override-hydra-job_logging">Keep Hydra quiet</a><a href="#stages">Run-level settings</a><a href="#paths">Where files go</a><a href="#hydra">hydra:</a></nav><section class="chunk"><div class="note"><h3>The top-level file<span class="lines">lines 1–1</span></h3><p>Everything else is pulled in from here.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span><span class="c1"># config - top-level run config; picks one option from each group below</span>
+</code></pre></div>
+</div></section><section class="chunk" id="defaults"><div class="note"><h3><a class="self" href="#defaults">defaults: one file per group</a><span class="lines">lines 3–10</span></h3><p>Each line <code>group: name</code> loads <code>conf/group/name.yaml</code> into
+<code>cfg.group</code>. The <code>anchors</code> group uses <code>altered_knn.yaml</code>, which
+itself builds on <code>anchors/base.yaml</code>.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos"> 3</span><span class="nt">defaults</span><span class="p">:</span>
+<span class="linenos"> 4</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">process</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ddim</span><span class="w">         </span><span class="c1"># generative process: ddim | flow</span>
+<span class="linenos"> 5</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">data</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gmm</span><span class="w">             </span><span class="c1"># dataset: Gaussian mixture on a sphere</span>
+<span class="linenos"> 6</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">sweep</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">base</span><span class="w">           </span><span class="c1"># the (d, K, anchors) grid</span>
+<span class="linenos"> 7</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">train</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">base</span><span class="w">           </span><span class="c1"># learned-model training</span>
+<span class="linenos"> 8</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">eval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">base</span><span class="w">            </span><span class="c1"># ground-truth evaluation</span>
+<span class="linenos"> 9</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">anchors</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">altered_knn</span><span class="w">  </span><span class="c1"># atlas anchors (builds on anchors/base.yaml)</span>
+<span class="linenos">10</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">classifier</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">base</span><span class="w">      </span><span class="c1"># shared classifier defaults (_shared)</span>
+</code></pre></div>
+</div></section><section class="chunk" id="classifier-classifier-models-knn"><div class="note"><h3><a class="self" href="#classifier-classifier-models-knn">The predictors to run</a><span class="lines">lines 12–16</span></h3><p>Each line puts one predictor file under <code>cfg.classifier.models.&lt;name&gt;</code>.
+To skip a predictor, delete its line; to add one, add a line. (The group is called "classifier"
+for historical reasons: these are the fate predictors.)</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">12</span><span class="w">  </span><span class="c1"># predictors to run: delete a line to skip that predictor</span>
+<span class="linenos">13</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">classifier@classifier.models.knn</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">knn</span>
+<span class="linenos">14</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">classifier@classifier.models.altered_knn</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">altered_knn</span>
+<span class="linenos">15</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">classifier@classifier.models.quadratic</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">quadratic</span>
+<span class="linenos">16</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">classifier@classifier.models.polar3</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">polar3</span>
+</code></pre></div>
+</div></section><section class="chunk" id="override-hydra-job_logging"><div class="note"><h3><a class="self" href="#override-hydra-job_logging">Keep Hydra quiet</a><span class="lines">lines 17–21</span></h3><p>By default Hydra writes its own log files and a <code>.hydra/</code> folder into the
+working directory. Switched off; main.py saves the configuration in the run folder instead.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">17</span><span class="w">  </span><span class="c1"># hydra writes nothing of its own (no main.log, no .hydra/): main.py saves the resolved</span>
+<span class="linenos">18</span><span class="w">  </span><span class="c1"># config into output/&lt;run_id&gt;/invocations/ instead</span>
+<span class="linenos">19</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">override hydra/job_logging</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">disabled</span>
+<span class="linenos">20</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">override hydra/hydra_logging</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">disabled</span>
+<span class="linenos">21</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">_self_</span>
+</code></pre></div>
+</div></section><section class="chunk" id="stages"><div class="note"><h3><a class="self" href="#stages">Run-level settings</a><span class="lines">lines 23–33</span></h3><p>What to run, on which device, the base RNG seed, how many repeats, the run's name, and
+whether a settings mismatch is an error (<code>strict_run</code>).</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">23</span><span class="nt">stages</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">train</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">evaluate</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">visualize</span><span class="p p-Indicator">]</span><span class="w">  </span><span class="c1"># stages to run, in order</span>
+<span class="linenos">24</span><span class="nt">device</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">auto</span><span class="w">                          </span><span class="c1"># auto | cpu | cuda</span>
+<span class="linenos">25</span><span class="nt">seed</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w">                               </span><span class="c1"># base RNG seed</span>
+<span class="linenos">26</span><span class="c1"># independent repeats: seeds seed, seed+100, ... (each re-randomises the mode placement on the</span>
+<span class="linenos">27</span><span class="c1"># sphere, the model init and the eval seeds); every metric is reported as mean +- std over them</span>
+<span class="linenos">28</span><span class="nt">n_seeds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+<span class="linenos">29</span><span class="c1"># the NAME of the run: its results live in output/&lt;run_id&gt;/ (models in checkpoints/).</span>
+<span class="linenos">30</span><span class="c1"># Invocations with the same run_id add to the same run and resume where it stopped -- small</span>
+<span class="linenos">31</span><span class="c1"># pieces or one big invocation give the same files (see code/runstate.py).</span>
+<span class="linenos">32</span><span class="nt">run_id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">abc123</span>
+<span class="linenos">33</span><span class="nt">strict_run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">                      </span><span class="c1"># refuse to add to a run made with different settings</span>
+</code></pre></div>
+</div></section><section class="chunk" id="paths"><div class="note"><h3><a class="self" href="#paths">Where files go</a><span class="lines">lines 35–38</span></h3><p><code>root</code> is <code>$ATLAS_ROOT</code> if set (scripts/main.sh sets it),
+otherwise the current directory. Models go to <code>checkpoints/</code>, results to
+<code>output/</code>.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">35</span><span class="nt">paths</span><span class="p">:</span>
+<span class="linenos">36</span><span class="w">  </span><span class="nt">root</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${oc.env:ATLAS_ROOT,${oc.env:PWD}}</span><span class="w">  </span><span class="c1"># repo root</span>
+<span class="linenos">37</span><span class="w">  </span><span class="nt">checkpoints</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${paths.root}/checkpoints</span><span class="w">    </span><span class="c1"># trained models + gt caches: &lt;process&gt;/&lt;variant&gt;/</span>
+<span class="linenos">38</span><span class="w">  </span><span class="nt">output</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${paths.root}/output</span><span class="w">              </span><span class="c1"># results: output/&lt;run_id&gt;/&lt;process&gt;/&lt;variant&gt;/T&lt;T&gt;/</span>
+</code></pre></div>
+</div></section><section class="chunk" id="hydra"><div class="note"><h3><a class="self" href="#hydra">hydra:</a><span class="lines">lines 40–45</span></h3><p>Stay in the current directory; Hydra must not change into a folder of its own.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">40</span><span class="nt">hydra</span><span class="p">:</span>
+<span class="linenos">41</span><span class="w">  </span><span class="nt">run</span><span class="p">:</span>
+<span class="linenos">42</span><span class="w">    </span><span class="nt">dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">.</span>
+<span class="linenos">43</span><span class="w">  </span><span class="nt">output_subdir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
+<span class="linenos">44</span><span class="w">  </span><span class="nt">job</span><span class="p">:</span>
+<span class="linenos">45</span><span class="w">    </span><span class="nt">chdir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-process-base-yaml"><div class="filehead"><h2><code>conf/process/base.yaml</code></h2><span class="meta">4 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>Steps for both processes<span class="lines">lines 1–4</span></h3><p>T_train = 500 steps for the learned sampler; the comment records why 150 was
+abandoned. T_true = 200 steps for the exact sampler that builds the atlas. For DDIM, see the
+note on <a href="core.html#make_schedule">make_schedule</a> about T changing the total noise.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span><span class="c1"># process/base - general process settings shared by every process</span>
+<span class="linenos">2</span>
+<span class="linenos">3</span><span class="nt">T_train</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">500</span><span class="w">  </span><span class="c1"># steps for the learned sampler (150 was too coarse: at d&gt;=32 even the EXACT score hallucinates, see README)</span>
+<span class="linenos">4</span><span class="nt">T_true</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">200</span><span class="w">   </span><span class="c1"># steps for the analytic (exact-field) backtrack</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-process-ddim-yaml"><div class="filehead"><h2><code>conf/process/ddim.yaml</code></h2><span class="meta">10 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>DDIM<span class="lines">lines 1–10</span></h3><p>The noise schedule's end points (β from 10⁻⁴ to 0.02) and the exact sampler's integrator (Heun).</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos"> 1</span><span class="c1"># process/ddim - DDIM (variance-preserving diffusion) specifics; builds on base</span>
+<span class="linenos"> 2</span>
+<span class="linenos"> 3</span><span class="nt">defaults</span><span class="p">:</span>
+<span class="linenos"> 4</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">base</span>
+<span class="linenos"> 5</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">_self_</span>
+<span class="linenos"> 6</span>
+<span class="linenos"> 7</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ddim</span><span class="w">        </span><span class="c1"># process identifier</span>
+<span class="linenos"> 8</span><span class="nt">beta_min</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1e-4</span><span class="w">    </span><span class="c1"># VP schedule: smallest beta</span>
+<span class="linenos"> 9</span><span class="nt">beta_max</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.02</span><span class="w">    </span><span class="c1"># VP schedule: largest beta</span>
+<span class="linenos">10</span><span class="nt">true_order</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">heun</span><span class="w">  </span><span class="c1"># exact-score backtrack integrator: heun | euler</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-process-flow-yaml"><div class="filehead"><h2><code>conf/process/flow.yaml</code></h2><span class="meta">10 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>Flow matching<span class="lines">lines 1–10</span></h3><p>σ<sub>min</sub>, the tiny spread left at t = 1 on the straight paths; the learned
+sampler's solver (Euler) and the exact field's (Heun).</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos"> 1</span><span class="c1"># process/flow - Flow-Matching (OT path) specifics; builds on base</span>
+<span class="linenos"> 2</span>
+<span class="linenos"> 3</span><span class="nt">defaults</span><span class="p">:</span>
+<span class="linenos"> 4</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">base</span>
+<span class="linenos"> 5</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">_self_</span>
+<span class="linenos"> 6</span>
+<span class="linenos"> 7</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flow</span><span class="w">         </span><span class="c1"># process identifier</span>
+<span class="linenos"> 8</span><span class="nt">sigma_min</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0001</span><span class="w">  </span><span class="c1"># sigma_min in the OT path (Eq. 20-23)</span>
+<span class="linenos"> 9</span><span class="nt">solver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">euler</span><span class="w">      </span><span class="c1"># learned-sampler ODE solver: euler | midpoint | heun | rk4</span>
+<span class="linenos">10</span><span class="nt">true_solver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">heun</span><span class="w">  </span><span class="c1"># exact-velocity backtrack solver: heun recommended</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-data-base-yaml"><div class="filehead"><h2><code>conf/data/base.yaml</code></h2><span class="meta">8 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>The data, shared part<span class="lines">lines 1–8</span></h3><p><code>mass_q</code> = 0.99 is where "99%" in R99 comes from: change it and the line
+between a mode and a hallucination moves. <code>weighted</code> chooses the variant.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span><span class="c1"># data/base - settings shared by every dataset</span>
+<span class="linenos">2</span>
+<span class="linenos">3</span><span class="nt">mass_q</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.99</span><span class="w">  </span><span class="c1"># mass of a mode inside its R99 ball: the mode / hallucination boundary</span>
+<span class="linenos">4</span><span class="c1"># mixing weights over the K modes. false: uniform 1/K. true: one random profile (U[0.3, 0.8],</span>
+<span class="linenos">5</span><span class="c1"># normalised) that each repeat seed assigns to the modes by its own permutation. The training</span>
+<span class="linenos">6</span><span class="c1"># data and the exact field use the same weights. The two variants are separate experiments:</span>
+<span class="linenos">7</span><span class="c1"># output/&lt;run_id&gt;/{checkpoints/&lt;process&gt;/,&lt;process&gt;/}&lt;weighted|unweighted&gt;/</span>
+<span class="linenos">8</span><span class="nt">weighted</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-data-gmm-yaml"><div class="filehead"><h2><code>conf/data/gmm.yaml</code></h2><span class="meta">10 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>The Gaussian mixture<span class="lines">lines 1–10</span></h3><p>σ = 0.1 per mode; base sphere radius 2.0 (scaled by √(d/2) in the code); modes at
+least 1.5 × 2 × R99 apart.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos"> 1</span><span class="c1"># data/gmm - Gaussian-mixture-on-a-sphere dataset; builds on base</span>
+<span class="linenos"> 2</span>
+<span class="linenos"> 3</span><span class="nt">defaults</span><span class="p">:</span>
+<span class="linenos"> 4</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">base</span>
+<span class="linenos"> 5</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">_self_</span>
+<span class="linenos"> 6</span>
+<span class="linenos"> 7</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gmm</span><span class="w">    </span><span class="c1"># dataset identifier</span>
+<span class="linenos"> 8</span><span class="nt">sigma</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.1</span><span class="w">   </span><span class="c1"># within-mode standard deviation</span>
+<span class="linenos"> 9</span><span class="nt">radius</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2.0</span><span class="w">  </span><span class="c1"># base sphere radius (trainer scales by sqrt(d/2))</span>
+<span class="linenos">10</span><span class="nt">m_mult</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.5</span><span class="w">  </span><span class="c1"># minimum mode-separation multiplier</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-sweep-base-yaml"><div class="filehead"><h2><code>conf/sweep/base.yaml</code></h2><span class="meta">5 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>The grid<span class="lines">lines 1–5</span></h3><p>Which d, K and anchor budgets to compute. The defaults are a small grid (d = 2 only);
+scripts/main.sh passes the full one.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span><span class="c1"># sweep/base - the (d, K, anchors) experiment grid</span>
+<span class="linenos">2</span>
+<span class="linenos">3</span><span class="nt">d</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">2</span><span class="p p-Indicator">]</span><span class="w">                           </span><span class="c1"># ambient dimensions to sweep</span>
+<span class="linenos">4</span><span class="nt">K</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">4</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">8</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">16</span><span class="p p-Indicator">]</span><span class="w">                 </span><span class="c1"># mode counts to sweep</span>
+<span class="linenos">5</span><span class="nt">anchors</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">20000</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">50000</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">100000</span><span class="p p-Indicator">]</span><span class="w">  </span><span class="c1"># per-mode anchor budgets to sweep</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-train-base-yaml"><div class="filehead"><h2><code>conf/train/base.yaml</code></h2><span class="meta">23 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>Training the learned sampler<span class="lines">lines 1–23</span></h3><p>Every piece of the recipe in <a href="core.html#run_optimizers">run_optimizers</a>
+and the retry rule in <a href="train.html#train_cell">train_cell</a>: the number of steps, the
+learning rate and its floor, gradient clipping, EMA, batch size, network widths, training-set size,
+the CUDA-graph switches, and the hallucination target with its retries.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos"> 1</span><span class="c1"># train/base - learned-model training settings</span>
+<span class="linenos"> 2</span>
+<span class="linenos"> 3</span><span class="nt">force_retrain</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">  </span><span class="c1"># retrain even if a checkpoint exists</span>
+<span class="linenos"> 4</span><span class="nt">base_steps</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30000</span><span class="w">     </span><span class="c1"># steps = base_steps * (1 + d/16) * (1 + K/16)</span>
+<span class="linenos"> 5</span><span class="nt">lr</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.001</span><span class="w">             </span><span class="c1"># initial learning rate</span>
+<span class="linenos"> 6</span><span class="nt">lr_min</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.0e-5</span><span class="w">        </span><span class="c1"># cosine-decay floor (null = off)</span>
+<span class="linenos"> 7</span><span class="nt">grad_clip</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.0</span><span class="w">        </span><span class="c1"># gradient-norm clip (null = off)</span>
+<span class="linenos"> 8</span><span class="nt">ema_decay</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.999</span><span class="w">      </span><span class="c1"># weight EMA decay (null = off)</span>
+<span class="linenos"> 9</span><span class="nt">ema_warmup</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span><span class="w">      </span><span class="c1"># steps to ramp EMA decay up to ema_decay</span>
+<span class="linenos">10</span><span class="nt">batch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">512</span><span class="w">            </span><span class="c1"># minibatch size</span>
+<span class="linenos">11</span><span class="nt">small_max_d</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">64</span><span class="w">       </span><span class="c1"># model size: 'small' for d &lt;= 64, 'large' for d = 128 .. 512</span>
+<span class="linenos">12</span><span class="nt">width</span><span class="p">:</span><span class="w">                </span><span class="c1"># ScoreNet hidden width per size</span>
+<span class="linenos">13</span><span class="w">  </span><span class="nt">small</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">256</span><span class="w">          </span><span class="c1">#   (the existing d &lt;= 64 checkpoints)</span>
+<span class="linenos">14</span><span class="w">  </span><span class="nt">large</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1024</span><span class="w">         </span><span class="c1">#   one net shared by d = 128, 256, 512</span>
+<span class="linenos">15</span><span class="nt">n_train</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100000</span><span class="w">       </span><span class="c1"># fixed training set per (d, K, seed); null = fresh samples every step</span>
+<span class="linenos">16</span><span class="nt">cuda_graph</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">      </span><span class="c1"># capture the train step in a CUDA graph (removes launch overhead; same maths)</span>
+<span class="linenos">17</span><span class="nt">graph_streams</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">   </span><span class="c1"># one stream per seed inside that graph (seeds train concurrently, ~2x).</span>
+<span class="linenos">18</span><span class="w">                      </span><span class="c1"># main.sh turns this off when JOBS_PER_GPU &gt; 1: several such processes</span>
+<span class="linenos">19</span><span class="w">                      </span><span class="c1"># on one GPU intermittently crash (illegal memory access, driver 565)</span>
+<span class="linenos">20</span><span class="nt">probe_n</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10000</span><span class="w">        </span><span class="c1"># samples to probe the hallucination rate</span>
+<span class="linenos">21</span><span class="nt">hall_target</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.015</span><span class="w">    </span><span class="c1"># retry until probe hall &lt;= this</span>
+<span class="linenos">22</span><span class="nt">step_growth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.7</span><span class="w">      </span><span class="c1"># multiply steps by this on each retry</span>
+<span class="linenos">23</span><span class="nt">max_attempts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">       </span><span class="c1"># retry once with step_growth x steps; a miss is saved and flagged not_converged</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-eval-base-yaml"><div class="filehead"><h2><code>conf/eval/base.yaml</code></h2><span class="meta">9 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>Evaluation<span class="lines">lines 1–9</span></h3><p>50 000 ground-truth seeds per mode; <code>part</code> (write cell files only) and
+<code>force</code> (recompute rows) are per-invocation switches.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span><span class="c1"># eval/base - ground-truth evaluation settings</span>
+<span class="linenos">2</span>
+<span class="linenos">3</span><span class="c1"># ground-truth seeds pushed through the learned sampler = n_eval_per_mode * K, so the per-mode</span>
+<span class="linenos">4</span><span class="c1"># count stays constant as K grows (K=2 -&gt; 100k, K=16 -&gt; 800k)</span>
+<span class="linenos">5</span><span class="nt">n_eval_per_mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50000</span>
+<span class="linenos">6</span><span class="nt">part</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">           </span><span class="c1"># true: only write this job's cell files, do not rebuild results.json</span>
+<span class="linenos">7</span><span class="w">                      </span><span class="c1"># (scripts/main.sh runs evaluate per d, then stages=[merge,visualize])</span>
+<span class="linenos">8</span><span class="nt">force</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">          </span><span class="c1"># true: recompute the requested (budget, predictor) rows even if the cell</span>
+<span class="linenos">9</span><span class="w">                      </span><span class="c1"># file already holds them</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-anchors-base-yaml"><div class="filehead"><h2><code>conf/anchors/base.yaml</code></h2><span class="meta">6 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>Anchors, shared part<span class="lines">lines 1–6</span></h3><p>The anchor RNG seed; the hallucination band (half as many points as the ball, 2σ
+wide); 5 000 calibration seeds for altered_knn.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span><span class="c1"># anchors/base - general atlas-anchor settings shared by every anchor set</span>
+<span class="linenos">2</span>
+<span class="linenos">3</span><span class="nt">seed</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w">            </span><span class="c1"># RNG seed for anchor sampling</span>
+<span class="linenos">4</span><span class="nt">shell_frac</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span><span class="w">    </span><span class="c1"># hallucination-band anchors per mode (fraction of ball anchors)</span>
+<span class="linenos">5</span><span class="nt">shell_sigma</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2.0</span><span class="w">   </span><span class="c1"># band width in sigma: R99 .. R99 + shell_sigma * sigma</span>
+<span class="linenos">6</span><span class="nt">n_calibrate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5000</span><span class="w">  </span><span class="c1"># seeds labelled by exact score to calibrate the hallucination cut</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-anchors-altered-knn-yaml"><div class="filehead"><h2><code>conf/anchors/altered_knn.yaml</code></h2><span class="meta">11 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>Ring anchors<span class="lines">lines 1–11</span></h3><p>5 rings out to 1.5 × R99, weights falling linearly to 0.2. See the
+<a href="core.html#ball_anchors">picture</a>.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos"> 1</span><span class="c1"># anchors/altered_knn - altered_knn ring anchors; builds on base</span>
+<span class="linenos"> 2</span>
+<span class="linenos"> 3</span><span class="nt">defaults</span><span class="p">:</span>
+<span class="linenos"> 4</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">base</span>
+<span class="linenos"> 5</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">_self_</span>
+<span class="linenos"> 6</span>
+<span class="linenos"> 7</span><span class="nt">altered_knn</span><span class="p">:</span>
+<span class="linenos"> 8</span><span class="w">  </span><span class="nt">n_rings</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span><span class="w">      </span><span class="c1"># concentric spheres per mode (R99 * r_max * j / n_rings)</span>
+<span class="linenos"> 9</span><span class="w">  </span><span class="nt">r_max</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.5</span><span class="w">      </span><span class="c1"># outermost ring radius, in units of R99</span>
+<span class="linenos">10</span><span class="w">  </span><span class="nt">weight</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">linear</span><span class="w">  </span><span class="c1"># ring weighting: linear | gaussian</span>
+<span class="linenos">11</span><span class="w">  </span><span class="nt">w_min</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.2</span><span class="w">      </span><span class="c1"># minimum ring weight</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-classifier-base-yaml"><div class="filehead"><h2><code>conf/classifier/base.yaml</code></h2><span class="meta">16 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>Predictor defaults<span class="lines">lines 1–16</span></h3><p>Every predictor starts from these values (<code>_shared</code>); its own file only
+lists what differs. Some only matter to one kind of predictor, as the comments say.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos"> 1</span><span class="c1"># classifier/base - hyper-parameters shared by every predictor (_shared); a predictor's own</span>
+<span class="linenos"> 2</span><span class="c1"># file (knn.yaml, polar3.yaml, ...) overrides them</span>
+<span class="linenos"> 3</span>
+<span class="linenos"> 4</span><span class="nt">_shared</span><span class="p">:</span>
+<span class="linenos"> 5</span><span class="w">  </span><span class="nt">hidden</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">256</span><span class="w">           </span><span class="c1"># polar: width of the (direction, radius) projection</span>
+<span class="linenos"> 6</span><span class="w">  </span><span class="nt">degree</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">             </span><span class="c1"># polar: polynomial degree</span>
+<span class="linenos"> 7</span><span class="w">  </span><span class="nt">epochs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span><span class="w">            </span><span class="c1"># parametric: training epochs</span>
+<span class="linenos"> 8</span><span class="w">  </span><span class="nt">batch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2048</span><span class="w">           </span><span class="c1"># parametric: minibatch size</span>
+<span class="linenos"> 9</span><span class="w">  </span><span class="nt">lr</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.003</span><span class="w">             </span><span class="c1"># parametric: peak learning rate (one-cycle)</span>
+<span class="linenos">10</span><span class="w">  </span><span class="nt">weight_decay</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0001</span><span class="w">  </span><span class="c1"># parametric: AdamW weight decay</span>
+<span class="linenos">11</span><span class="w">  </span><span class="nt">min_steps</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3000</span><span class="w">       </span><span class="c1"># parametric: at least this many gradient steps</span>
+<span class="linenos">12</span><span class="w">  </span><span class="nt">ensemble</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">           </span><span class="c1"># parametric: models averaged (non-parametric: 1)</span>
+<span class="linenos">13</span><span class="w">  </span><span class="nt">k</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span><span class="w">                 </span><span class="c1"># knn / altered_knn: neighbours</span>
+<span class="linenos">14</span><span class="w">  </span><span class="nt">temperature</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.1</span><span class="w">      </span><span class="c1"># altered_knn: softmax temperature on the vote</span>
+<span class="linenos">15</span><span class="w">  </span><span class="nt">threshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">auto</span><span class="w">       </span><span class="c1"># altered_knn: confidence cut in [0,1], or auto (max F1 on calibration)</span>
+<span class="linenos">16</span><span class="w">  </span><span class="nt">confidence</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">entropy</span><span class="w">   </span><span class="c1"># altered_knn: entropy | max</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-classifier-knn-yaml"><div class="filehead"><h2><code>conf/classifier/knn.yaml</code></h2><span class="meta">4 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>knn<span class="lines">lines 1–4</span></h3><p>Name and implementation only; everything else from the defaults.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span><span class="c1"># classifier/knn - kNN predictor spec</span>
+<span class="linenos">2</span>
+<span class="linenos">3</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">knn</span><span class="w">  </span><span class="c1"># predictor family</span>
+<span class="linenos">4</span><span class="nt">arch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">knn</span><span class="w">  </span><span class="c1"># implementation: k-nearest-anchor vote</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-classifier-altered-knn-yaml"><div class="filehead"><h2><code>conf/classifier/altered_knn.yaml</code></h2><span class="meta">4 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>altered_knn<span class="lines">lines 1–4</span></h3><p>Name and implementation only; everything else from the defaults.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span><span class="c1"># classifier/altered_knn - altered-kNN predictor spec</span>
+<span class="linenos">2</span>
+<span class="linenos">3</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">altered_knn</span><span class="w">  </span><span class="c1"># predictor family</span>
+<span class="linenos">4</span><span class="nt">arch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">altered_knn</span><span class="w">  </span><span class="c1"># implementation: weighted mode-only kNN</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-classifier-quadratic-yaml"><div class="filehead"><h2><code>conf/classifier/quadratic.yaml</code></h2><span class="meta">4 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>quadratic<span class="lines">lines 1–4</span></h3><p>Name and implementation only; everything else from the defaults.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span><span class="c1"># classifier/quadratic - quadratic-boundary predictor spec</span>
+<span class="linenos">2</span>
+<span class="linenos">3</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">quadratic</span><span class="w">  </span><span class="c1"># predictor family</span>
+<span class="linenos">4</span><span class="nt">arch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">quadratic</span><span class="w">  </span><span class="c1"># implementation: linear classifier on (x, all products x_i x_j)</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-classifier-polar3-yaml"><div class="filehead"><h2><code>conf/classifier/polar3.yaml</code></h2><span class="meta">5 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>polar3<span class="lines">lines 1–5</span></h3><p>The polar predictor with a degree-3 polynomial. A <code>polar5.yaml</code> would only need a different name and degree.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span><span class="c1"># classifier/polar3 - degree-3 polar-boundary predictor spec</span>
+<span class="linenos">2</span>
+<span class="linenos">3</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">polar3</span><span class="w">  </span><span class="c1"># predictor family</span>
+<span class="linenos">4</span><span class="nt">arch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">polar</span><span class="w">   </span><span class="c1"># implementation: polar polynomial boundary</span>
+<span class="linenos">5</span><span class="nt">degree</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">     </span><span class="c1"># polynomial degree</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-readme-md"><div class="filehead"><h2><code>README.md</code></h2><span class="meta">100 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>The repository&#x27;s own README<span class="lines">lines 1–100</span></h3><p>Setup, how to run, the output layout and the method notes, as the author wrote them.
+The README's explanation of why 150 steps hallucinate ("small discretisation error") is plausible.
+For DDIM, part of the effect may also be the schedule issue described at
+<a href="core.html#make_schedule">make_schedule</a>.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">  1</span><span class="gh"># Seed-fate atlas</span>
+<span class="linenos">  2</span>
+<span class="linenos">  3</span>Which initial noise seeds make a diffusion (or flow-matching) model <span class="gs">**hallucinate**</span>?
+<span class="linenos">  4</span>
+<span class="linenos">  5</span>Data is a Gaussian mixture of K modes on a sphere in d dimensions. A seed x ~ N(0, I) has a
+<span class="linenos">  6</span><span class="gs">**fate**</span>: the mode whose 99%-mass ball (radius R99) its sample lands in, or <span class="ge">*hallucination*</span> if it
+<span class="linenos">  7</span>lands in none. Because the mixture's exact score is known in closed form, we can plant labelled
+<span class="linenos">  8</span>points around the modes, carry them back to seed space with the exact field, and fit
+<span class="linenos">  9</span>predictors of a seed's fate from them (the <span class="ge">*atlas*</span>). Each predictor is scored against the
+<span class="linenos"> 10</span>fates the <span class="gs">**learned**</span> sampler actually produces.
+<span class="linenos"> 11</span>
+<span class="linenos"> 12</span><span class="gu">## Layout</span>
+<span class="linenos"> 13</span>
+<span class="linenos"> 14</span><span class="sb">```</span>
+<span class="linenos"> 15</span><span class="sb">code/</span>
+<span class="linenos"> 16</span><span class="sb">  main.py          Hydra entry point: runs the stages</span>
+<span class="linenos"> 17</span><span class="sb">  train.py         stage 1: one learned sampler per (d, K, seed) + its ground-truth fates</span>
+<span class="linenos"> 18</span><span class="sb">  evaluate.py      stage 2: anchors -&gt; exact backtrack -&gt; predictors -&gt; scores (one file per cell)</span>
+<span class="linenos"> 19</span><span class="sb">  visualize.py     stage 3: results.json -&gt; (d, K) heatmaps and a LaTeX/PNG table</span>
+<span class="linenos"> 20</span><span class="sb">  core.py          numerics: GMM, score network, training recipe, exact sampler, anchors</span>
+<span class="linenos"> 21</span><span class="sb">  fate.py          the fate predictors (knn, altered_knn, quadratic, polar) and metrics</span>
+<span class="linenos"> 22</span><span class="sb">  processes/       ddim.py (VP diffusion, DDIM), flow.py (flow matching, OT path)</span>
+<span class="linenos"> 23</span><span class="sb">  runstate.py      named runs: settings check, invocation log</span>
+<span class="linenos"> 24</span><span class="sb">  combine.py       merge a run built on another machine into this one</span>
+<span class="linenos"> 25</span><span class="sb">  rank_probe.py    standalone: is the hallucination set low-rank?</span>
+<span class="linenos"> 26</span><span class="sb">  unit_tests/      python code/unit_tests/run.py</span>
+<span class="linenos"> 27</span><span class="sb">conf/              Hydra configs: config.yaml + one folder per group</span>
+<span class="linenos"> 28</span><span class="sb">scripts/main.sh    the full sweep, fanned out over all GPUs  (scripts/slurm/: the same on SLURM)</span>
+<span class="linenos"> 29</span><span class="sb">output/&lt;run_id&gt;/   everything a run produces (below)</span>
+<span class="linenos"> 30</span><span class="sb">```</span>
+<span class="linenos"> 31</span>
+<span class="linenos"> 32</span><span class="gu">## Setup</span>
+<span class="linenos"> 33</span>
+<span class="linenos"> 34</span><span class="sb">```bash</span>
+<span class="linenos"> 35</span>python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>venv<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">source</span><span class="w"> </span>venv/bin/activate
+<span class="linenos"> 36</span>pip<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>requirements.txt<span class="w">     </span><span class="c1"># tested: python 3.12, torch 2.5.1+cu121</span>
+<span class="linenos"> 37</span><span class="sb">```</span>
+<span class="linenos"> 38</span>
+<span class="linenos"> 39</span><span class="gu">## Run</span>
+<span class="linenos"> 40</span>
+<span class="linenos"> 41</span><span class="sb">```bash</span>
+<span class="linenos"> 42</span>python<span class="w"> </span>code/main.py<span class="w">                                   </span><span class="c1"># the sweep in conf/sweep/base.yaml</span>
+<span class="linenos"> 43</span>python<span class="w"> </span>code/main.py<span class="w"> </span>sweep.d<span class="o">=[</span><span class="m">16</span>,64<span class="o">]</span><span class="w"> </span>sweep.K<span class="o">=[</span><span class="m">4</span>,8<span class="o">]</span><span class="w">     </span><span class="c1"># another grid</span>
+<span class="linenos"> 44</span>python<span class="w"> </span>code/main.py<span class="w"> </span><span class="nv">process</span><span class="o">=</span>flow<span class="w">                      </span><span class="c1"># flow matching instead of DDIM</span>
+<span class="linenos"> 45</span>python<span class="w"> </span>code/main.py<span class="w"> </span><span class="nv">stages</span><span class="o">=[</span>visualize<span class="o">]</span><span class="w">                </span><span class="c1"># re-plot only</span>
+<span class="linenos"> 46</span>./scripts/main.sh<span class="w">                                     </span><span class="c1"># the full grid on every GPU</span>
+<span class="linenos"> 47</span><span class="nv">DIMS</span><span class="o">=</span><span class="s2">"512"</span><span class="w"> </span><span class="nv">KS</span><span class="o">=</span><span class="s2">"2 4 8 16"</span><span class="w"> </span><span class="nv">PROCESSES</span><span class="o">=</span>ddim<span class="w"> </span>./scripts/main.sh
+<span class="linenos"> 48</span><span class="sb">```</span>
+<span class="linenos"> 49</span>
+<span class="linenos"> 50</span>Every setting is a Hydra override (<span class="sb">`conf/`</span> holds the defaults). Predictors to run are the
+<span class="linenos"> 51</span><span class="sb">`classifier@classifier.models.*`</span> lines of <span class="sb">`conf/config.yaml`</span>.
+<span class="linenos"> 52</span>
+<span class="linenos"> 53</span><span class="gu">## Runs are named and additive</span>
+<span class="linenos"> 54</span>
+<span class="linenos"> 55</span>A run is a <span class="gs">**name**</span> (<span class="sb">`run_id`</span>, default <span class="sb">`abc123`</span>); everything lives in <span class="sb">`output/&lt;run_id&gt;/`</span>:
+<span class="linenos"> 56</span>
+<span class="linenos"> 57</span><span class="sb">```</span>
+<span class="linenos"> 58</span><span class="sb">run.json, history.log, invocations/        settings, one line / one config per invocation</span>
+<span class="linenos"> 59</span><span class="sb">checkpoints/&lt;process&gt;/&lt;variant&gt;/           checkpoints/model_d&lt;d&gt;_K&lt;K&gt;_s&lt;seed&gt;.pt, gt_cache/, manifest.json</span>
+<span class="linenos"> 60</span><span class="sb">&lt;process&gt;/&lt;variant&gt;/T&lt;T_true&gt;/             cells/d&lt;d&gt;_K&lt;K&gt;_s&lt;seed&gt;.json   (the result rows)</span>
+<span class="linenos"> 61</span><span class="sb">                                           results.json, results.csv, results_per_seed.csv</span>
+<span class="linenos"> 62</span><span class="sb">                                           table.tex, table.png, &lt;model&gt;.png, anchors_&lt;b&gt;/</span>
+<span class="linenos"> 63</span><span class="sb">logs/                                      scripts/main.sh job logs</span>
+<span class="linenos"> 64</span><span class="sb">```</span>
+<span class="linenos"> 65</span>
+<span class="linenos"> 66</span><span class="sb">`&lt;variant&gt;`</span> is <span class="sb">`unweighted`</span> or <span class="sb">`weighted`</span> (<span class="sb">`data.weighted`</span>: random mixing weights). Every stage
+<span class="linenos"> 67</span>skips what already exists, so re-running a run resumes it and a sweep split into pieces (other
+<span class="linenos"> 68</span>d, more seeds, another anchor budget, another T_true or predictor) gives the files of one big
+<span class="linenos"> 69</span>invocation. The first invocation records the settings in <span class="sb">`run.json`</span>; a later one that changes
+<span class="linenos"> 70</span>how cells are computed (training recipe, eval size, a predictor's hyper-parameters, ...) is
+<span class="linenos"> 71</span>refused (<span class="sb">`strict_run=false`</span> overrides). Use a new <span class="sb">`run_id`</span> for a new experiment.
+<span class="linenos"> 72</span>
+<span class="linenos"> 73</span><span class="gs">**Several machines.**</span> Run the same <span class="sb">`run_id`</span> elsewhere (e.g. <span class="sb">`DIMS="512"`</span>), copy that machine's
+<span class="linenos"> 74</span><span class="sb">`output/&lt;run_id&gt;/`</span> back, then
+<span class="linenos"> 75</span>
+<span class="linenos"> 76</span><span class="sb">```bash</span>
+<span class="linenos"> 77</span>python<span class="w"> </span>code/combine.py<span class="w"> </span>/path/to/copied/abc123<span class="w"> </span>--dry-run<span class="w">    </span><span class="c1"># report first</span>
+<span class="linenos"> 78</span>python<span class="w"> </span>code/combine.py<span class="w"> </span>/path/to/copied/abc123<span class="w">              </span><span class="c1"># merge + rebuild results and figures</span>
+<span class="linenos"> 79</span><span class="sb">```</span>
+<span class="linenos"> 80</span>
+<span class="linenos"> 81</span>It checks the settings match, copies what is missing, merges cell rows and manifests, and
+<span class="linenos"> 82</span>never mixes a model with results computed from a different model of the same cell.
+<span class="linenos"> 83</span>
+<span class="linenos"> 84</span><span class="gu">## Method notes</span>
+<span class="linenos"> 85</span>
+<span class="linenos"> 86</span><span class="k">-</span><span class="w"> </span><span class="gs">**Ground truth**</span> = fates of <span class="sb">`eval.n_eval_per_mode * K`</span> seeds under the learned sampler,
+<span class="linenos"> 87</span>  cached at train time. Metrics: full accuracy, mode accuracy / macro F1, hallucination
+<span class="linenos"> 88</span>  precision / recall / F1. Every number is mean ± std over <span class="sb">`n_seeds`</span> repeats (seeds 0, 100,
+<span class="linenos"> 89</span>  200, ...), each with its own mode placement, model and eval seeds.
+<span class="linenos"> 90</span><span class="k">-</span><span class="w"> </span><span class="gs">**Training recipe**</span> (<span class="sb">`conf/train/base.yaml`</span>): Adam, cosine lr decay, gradient clipping, EMA
+<span class="linenos"> 91</span>  weights; retried with more steps while the probe hallucination rate exceeds <span class="sb">`hall_target`</span>.
+<span class="linenos"> 92</span>  Width 256 for d ≤ 64, 1024 above (the R99 margin shrinks like 1/√d). Each seed has its own
+<span class="linenos"> 93</span>  RNG, so training seeds together (one CUDA graph, ~15x faster) or apart gives the same model.
+<span class="linenos"> 94</span><span class="k">-</span><span class="w"> </span><span class="gs">**T_train = 500.**</span> At 150 steps even the <span class="ge">*exact*</span> score hallucinates in high d (15/52/93/100 %
+<span class="linenos"> 95</span>  at d = 32/64/128/256): a mode's 99% ball is a shell of relative width ~1.2/√d, so small
+<span class="linenos"> 96</span>  discretisation error ejects samples. With T = 500 the exact score stays ≤ 0.6 % up to d = 256.
+<span class="linenos"> 97</span><span class="k">-</span><span class="w"> </span><span class="gs">**Exact field.**</span> DDIM: closed-form GMM score, Heun steps (data → seed → data round-trips to
+<span class="linenos"> 98</span>  the same label). Flow: the marginal OT velocity including the within-mode variance.
+<span class="linenos"> 99</span><span class="k">-</span><span class="w"> </span><span class="gs">**Anchors**</span> (<span class="sb">`conf/anchors/`</span>): per mode, b points uniform in the R99 ball plus b/2 in the band
+<span class="linenos">100</span>  R99 .. R99 + 2σ (hallucination class); altered_knn uses weighted concentric rings instead.
+</code></pre></div>
+</div></section></section><section class="file" id="file-requirements-txt"><div class="filehead"><h2><code>requirements.txt</code></h2><span class="meta">6 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>Python packages<span class="lines">lines 1–6</span></h3><p>Tested with Python 3.12 and torch 2.5.1 (CUDA 12.1 wheels), per the README.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span>torch&gt;=2.0
+<span class="linenos">2</span>numpy&gt;=1.24
+<span class="linenos">3</span>scipy&gt;=1.10
+<span class="linenos">4</span>matplotlib&gt;=3.7
+<span class="linenos">5</span>hydra-core&gt;=1.3
+<span class="linenos">6</span>omegaconf&gt;=2.3
+</code></pre></div>
+</div></section></section><section class="file" id="file--gitignore"><div class="filehead"><h2><code>.gitignore</code></h2><span class="meta">3 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>Not tracked by git<span class="lines">lines 1–3</span></h3><p>The virtual environment and Python's compiled caches.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span>venv/
+<span class="linenos">2</span>__pycache__/
+<span class="linenos">3</span>*.pyc
+</code></pre></div>
+</div></section></section><div class="pager"><a href="index.html"><span class="dir">← previous</span>The seed-fate atlas, explained</a><a class="next" href="main.html"><span class="dir">next →</span>Starting a run: main.py and runstate.py</a></div>
+<div class="foot">Generated by <code>preview_code/build.py</code> from commit ffe83f6
+on 2026-09-23. The code shown is read from the repository at build time;
+after changing the code, run <code>python preview_code/build.py</code> again.</div>
+</main>
+</body>
+</html>
