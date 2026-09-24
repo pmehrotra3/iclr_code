@@ -2,7 +2,7 @@
 
 Why this stage exists
 ---------------------
-`stages/evaluate` asks how PREDICTABLE a sampler's fates are from the seed: it
+`evaluate` asks how PREDICTABLE a sampler's fates are from the seed: it
 picks one ground-truth sampler and scores classifiers against it. That is the
 right question for the paper's main claim, but it is not the question Abhinav
 asked about the baselines, which is whether an intervention sends each seed to
@@ -43,9 +43,16 @@ Against the learnt baseline, so an intervention is judged on what it changed:
     rescued       baseline hallucinated it, this sampler places it
     moved         baseline placed it in basin i, this sampler in basin j != i
 
-Writes output/<process>/basin[_<tag>].{json,csv} and a per-(d,K) console table.
-Run it under any one process; it loops over `basin.samplers` itself, so a single
-invocation covers every method.
+Every sampler runs the SAME network: the ddim checkpoint of each (d, K, seed) cell
+(seeds: basin.seeds, default the run's repeat seeds), each baseline with the knobs of
+its conf/process/<name>.yaml. Seeds are the cell's eval seeds, proc.seeds(n, d, seed+1).
+
+Writes output/<run_id>/ddim/<variant>/basin/basin[_<tag>].{json,csv} and a per-cell
+console table. It loops over `basin.samplers` itself, so a single invocation covers
+every method:
+
+    python code/baselines/main.py 'stages=[basin]'
+    python code/baselines/main.py 'stages=[basin]' 'basin.d=[2,8]' 'basin.K=[4]' basin.n_eval=20000
 """
 from __future__ import annotations
 
@@ -55,8 +62,11 @@ import json
 import torch
 from omegaconf import OmegaConf
 
-from common import checkpoint, utils
-from common.process import make_process
+import core
+from evaluate import load_ckpt
+from processes.factory import make_process
+from train import ckpt_path, n_eval_for, variant_of
+from baselines.process import process_cfg
 
 DEFAULT_SAMPLERS = ("ddim", "rods_cas", "rods_sas", "iq")
 
@@ -99,45 +109,32 @@ def _vs_baseline(base, got):
     )
 
 
-def _one(cfg, d, K, device, samplers):
-    """All samplers on one (d, K) cell, sharing seeds and a reference."""
-    ck_root = cfg.paths.checkpoints
-    T_train = int(cfg.sweep.T_train)
-
-    # any available checkpoint defines the GMM; prefer the learnt baseline's
-    src = None
-    for nm in ("ddim",) + tuple(samplers):
-        p = utils.ckpt_path(ck_root, nm, d, K, T_train)
-        if os.path.exists(p):
-            src = p
-            break
-    if src is None:
+def _one(cfg, d, K, seed, device, samplers):
+    """All samplers on one (d, K, seed) cell, sharing seeds, a reference and the network."""
+    path = ckpt_path(cfg.paths.checkpoints, "ddim", d, K, seed, variant_of(cfg))
+    if not os.path.exists(path):
         return None
-    model, ck = checkpoint.load(src, device)
-    means_t, R99, variance = ck["means"], ck["R99"], ck["variance"]
+    model, ck = load_ckpt(path, device)
+    means_t, R99, variance, T = ck["means"], float(ck["R99"]), ck["variance"], int(ck["T"])
+    weights = ck.get("weights")
 
-    n = int(cfg.basin.get("n_eval", cfg.eval.n_eval))
-    proc0 = make_process("ddim", means_t, variance, ck["T"], device, cfg)
-    X = proc0.seeds(n, d, cfg.seed + 1)
+    n = int(cfg.basin.get("n_eval", None) or n_eval_for(cfg, K))
+    ddim_cfg = process_cfg(cfg, ck, "ddim")
+    X = make_process("ddim", means_t, variance, T, device, ddim_cfg, weights).seeds(n, d, seed + 1)
 
     # reference: the analytic field at T_true. No model, no threshold on top.
-    ref_proc = make_process("ddim", means_t, variance, int(cfg.sweep.T_true),
-                            device, cfg)
+    ref_proc = make_process("ddim", means_t, variance, int(ddim_cfg.process.T_true), device,
+                            ddim_cfg, weights)
     ref = _label(ref_proc, None, X, R99)
 
-    row = {"d": d, "K": K, "n_eval": n,
+    row = {"d": d, "K": K, "seed": seed, "n_eval": n,
            "ref_hall_rate": float((ref == -1).float().mean()),
            "samplers": {}}
 
     base_fate = None
     for nm in samplers:
-        p = utils.ckpt_path(ck_root, nm, d, K, T_train)
-        if not os.path.exists(p):
-            print(f"[basin] d={d:>2} K={K:>2} {nm:>9}: no checkpoint, skipped")
-            continue
-        m, _ = checkpoint.load(p, device)
-        proc = make_process(nm, means_t, variance, ck["T"], device, cfg)
-        got = _label(proc, m, X, R99)
+        proc = make_process(nm, means_t, variance, T, device, process_cfg(cfg, ck, nm), weights)
+        got = _label(proc, model, X, R99)
         if nm == "ddim":
             base_fate = got
         r = _agree(ref, got)
@@ -145,7 +142,6 @@ def _one(cfg, d, K, device, samplers):
         if base_fate is not None and nm != "ddim":
             r.update(_vs_baseline(base_fate, got))
         row["samplers"][nm] = r
-        del m
         if device.type == "cuda":
             torch.cuda.empty_cache()
     return row
@@ -153,7 +149,7 @@ def _one(cfg, d, K, device, samplers):
 
 def _print(row):
     d, K = row["d"], row["K"]
-    print(f"\n=== d={d}  K={K}  n={row['n_eval']}  "
+    print(f"\n=== d={d}  K={K}  seed={row['seed']}  n={row['n_eval']}  "
           f"reference (analytic) hall={100*row['ref_hall_rate']:.2f}% ===")
     print(f"  {'sampler':<10} {'basin acc':>10} {'mode acc':>9} {'misasgn':>8} "
           f"{'halluc':>7} {'spur':>6} {'HR':>7} {'preserved':>10} {'broke':>7} "
@@ -168,38 +164,41 @@ def _print(row):
 
 
 def run(cfg):
-    device = utils.get_device(cfg.device)
-    samplers = tuple(cfg.basin.get("samplers", DEFAULT_SAMPLERS))
-    out_dir = utils.process_dir(cfg.paths.output, cfg.process)
+    device = core.get_device(cfg.device)
+    b = cfg.basin
+    samplers = tuple(b.get("samplers", None) or DEFAULT_SAMPLERS)
+    seeds = [int(x) for x in (b.get("seeds", None) or core.seed_list(cfg))]
+    out_dir = os.path.join(cfg.paths.output, str(cfg.run_id), "ddim", variant_of(cfg), "basin")
     os.makedirs(out_dir, exist_ok=True)
 
     rows = []
-    for d in cfg.sweep.d:
-        for K in cfg.sweep.K:
-            r = _one(cfg, int(d), int(K), device, samplers)
-            if r is None:
-                print(f"[basin] d={d:>2} K={K:>2} -> no checkpoint, skipped")
-                continue
-            _print(r)
-            rows.append(r)
+    for d in b.d:
+        for K in b.K:
+            for seed in seeds:
+                r = _one(cfg, int(d), int(K), seed, device, samplers)
+                if r is None:
+                    print(f"[basin] d={d:>2} K={K:>2} seed={seed} -> no ddim checkpoint, skipped")
+                    continue
+                _print(r)
+                rows.append(r)
 
-    tag = cfg.eval.tag
-    js = os.path.join(out_dir, f"basin{'_' + tag if tag else ''}.json")
+    tag = b.get("tag", None)
+    js = os.path.join(out_dir, f"basin{'_' + str(tag) if tag else ''}.json")
     with open(js, "w") as f:
         json.dump({"reference": "analytic field (exact GMM score)",
-                   "samplers": list(samplers),
-                   "sweep": OmegaConf.to_container(cfg.sweep, resolve=True),
+                   "samplers": list(samplers), "seeds": seeds,
+                   "basin": OmegaConf.to_container(b, resolve=True),
                    "results": rows}, f, indent=2)
 
     cols = ["basin_acc", "mode_acc", "misassigned", "hallucinated", "spurious",
             "hall_rate", "d_hall", "preserved", "broke", "moved", "rescued"]
     csv = js[:-5] + ".csv"
     with open(csv, "w") as f:
-        f.write("d,K,n_eval,ref_hall_rate,sampler," + ",".join(cols) + "\n")
+        f.write("d,K,seed,n_eval,ref_hall_rate,sampler," + ",".join(cols) + "\n")
         for r in rows:
-            pre = f"{r['d']},{r['K']},{r['n_eval']},{r['ref_hall_rate']:.5f}"
-            for nm, s in r["samplers"].items():
+            pre = f"{r['d']},{r['K']},{r['seed']},{r['n_eval']},{r['ref_hall_rate']:.5f}"
+            for nm, s_ in r["samplers"].items():
                 f.write(f"{pre},{nm}," + ",".join(
-                    (f"{s[c]:.5f}" if c in s else "") for c in cols) + "\n")
+                    (f"{s_[c]:.5f}" if c in s_ else "") for c in cols) + "\n")
     print(f"\n[basin] wrote {js} and {csv}")
     return {"json": js, "csv": csv, "n_cells": len(rows)}

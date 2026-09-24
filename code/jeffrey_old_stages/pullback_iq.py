@@ -1,6 +1,7 @@
-"""stages/pullback_iq.py — Prop. 4 pulled-back normal vs Intrinsic Quenching (DDIM only).
+"""pullback_iq.py — Prop. 4 pulled-back normal vs Intrinsic Quenching (DDIM only).
 
-For each (d, K) in pullback.d x pullback.K, with the trained checkpoint at sweep.T_train:
+For each (d, K) in pullback.d x pullback.K, with the ddim checkpoint of seed pullback.ckpt_seed
+(checkpoints/ddim/<variant>/checkpoints/model_d<d>_K<K>_s<seed>.pt, made by stages=[train]):
 
   1. draw pullback.n_seeds seeds, keep the ones whose endpoint under the field F
      (pullback.field: learned | true) is an intermodal hallucination: farther than
@@ -31,17 +32,17 @@ For each (d, K) in pullback.d x pullback.K, with the trained checkpoint at sweep
                    are > R99 apart
        deviation curves ||x_t - x_t^OG|| for IQ and Ours
 
-Writes output/<run_tag>/<process>/pullback/d{d}_K{K}.{npz,json} and summary.csv.
-Figures: stage pullback_viz -> visualization/<run_tag>/<process>/pullback/
+Writes output/<run_id>/ddim/<variant>/pullback/d{d}_K{K}.{npz,json} and summary.csv.
+Figures: stage pullback_viz -> output/<run_id>/ddim/<variant>/pullback/figures/
   d{d}_K{K}_stats: deviation curves and seed-space budgets over all studied seeds
   d2_K{K}_example: one seed -- trajectories over the mode classes and the distance from
                    the original trajectory.
   d2_K{K}_anim:    the same seed as an animation (gif, plus mp4 if ffmpeg is present);
                    turn off with pullback.animate=false.
 
-    python code/ddim/main.py sweep=atlas stages=[pullback,pullback_viz]
-    python code/ddim/main.py sweep=atlas stages=[pullback,pullback_viz] pullback.d=[2] pullback.K=[2,4]
-    python code/baselines/main.py sweep=atlas stages=[pullback] pullback.ckpt_process=ddim
+    python code/baselines/main.py 'stages=[pullback,pullback_viz]'
+    python code/baselines/main.py 'stages=[pullback,pullback_viz]' 'pullback.d=[2]' 'pullback.K=[2,4]'
+    python code/baselines/main.py 'stages=[pullback]' data.weighted=true      # weighted variant
 """
 from __future__ import annotations
 import os
@@ -51,58 +52,82 @@ import time
 import numpy as np
 import torch
 
-from common import gmm, checkpoint, utils
-from common.process import make_process
+from omegaconf import OmegaConf
+
+import core
+from evaluate import load_ckpt
+from processes.factory import make_process
+from train import ckpt_path, gt_cache_path, variant_of
 
 
-def use_ckpt_schedule(proc, ck):
-    """Sample a checkpoint with the noise schedule it was TRAINED with.
-
-    Checkpoints from Pranav's current code store their config, including the DDIM schedule
-    (discrete linear betas, beta_min..beta_max over T steps). This repo's DDIM builds a
-    different (continuous VP) schedule, so without this his models are sampled wrongly.
-    Checkpoints without a stored schedule are left alone."""
-    pc = (ck.get("config") or {}).get("process") if isinstance(ck, dict) else None
-    if not pc or "beta_min" not in pc or "beta_max" not in pc:
-        return proc
-    T = int(ck.get("T", proc.T))
-    betas = np.linspace(float(pc["beta_min"]), float(pc["beta_max"]), T)
-    proc.abar = torch.tensor(np.cumprod(1.0 - betas), dtype=torch.float32,
-                             device=proc.abar.device)
-    proc.T = T
-    return proc
+def checkpoint_config(ck, cfg):
+    """cfg on the checkpoint's own noise schedule: the process settings stored in the checkpoint
+    (beta_min, beta_max, ...) replace the current ones; name, T and the exact-field solver stay."""
+    out = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+    stored = (ck.get("config") or {}).get("process", {})
+    if isinstance(stored, dict):
+        for key, value in stored.items():
+            if key not in ("name", "T_true", "T_train", "true_order", "true_solver"):
+                out.process[key] = value
+    return out
 
 
-GT_FMT = "{root}/data/ddim/weighted/gt_cache/d{d}_K{K}_s{seed}.pt"
-CK_FMT = "{root}/data/ddim/weighted/checkpoints/model_d{d}_K{K}_s{seed}.pt"
+def ddim_step(proc, x, i, eps):
+    """One DDIM update from level i to i-1 on proc's schedule. Differentiable on purpose:
+    core._ddim_step runs under no_grad, which would cut the pullback's backprop."""
+    ab, abp = proc.abar[i], proc.abar[i - 1]
+    x0 = (x - torch.sqrt(1 - ab) * eps) / torch.sqrt(ab)
+    return torch.sqrt(abp) * x0 + torch.sqrt(1 - abp) * eps
 
 
-def _path(fmt, cfg, d, K, seed=0, variant=None):
-    p = os.path.expanduser(str(fmt).format(root=cfg.paths.root, d=d, K=K, seed=seed))
-    if variant and variant != "weighted":                    # e.g. data/ddim/unweighted/...
-        p = p.replace("/weighted/", f"/{variant}/")
-    return p
+def ckpt_process(cfg, blk):
+    """Process whose checkpoints and ground truth a stage reads: blk.ckpt_process, or when null
+    the selected process if it is ddim or flow, else ddim (rods_cas / rods_sas / iq reuse the
+    ddim checkpoints, and their gt_cache holds their own fates, not the plain sampler's)."""
+    v = blk.get("ckpt_process", None)
+    if v:
+        return str(v)
+    name = str(cfg.process.name)
+    return name if name in ("ddim", "flow") else "ddim"
 
 
-def resolve_ckpt(cfg, blk, pname, d, K):
-    """Pranav's checkpoint (data/ddim/weighted/checkpoints/...) if present, else this repo's
-    checkpoints/<process>/model_d{d}_K{K}_T{T}.pt."""
-    fmt = blk.get("ckpt_fmt", CK_FMT)
-    if fmt:
-        p = _path(fmt, cfg, d, K, int(blk.get("ckpt_seed", 0)), blk.get("variant", None))
-        if os.path.exists(p):
-            return p
-    return utils.ckpt_path(cfg.paths.checkpoints, pname, d, K, int(cfg.sweep.T_train))
+def ckpt_seed(cfg, blk):
+    """Repeat seed of the checkpoint to study: blk.ckpt_seed, default cfg.seed (0)."""
+    s = blk.get("ckpt_seed", None)
+    return int(cfg.seed if s is None else s)
+
+
+def load_cell(cfg, blk, d, K, device, need_ddim=True):
+    """The checkpoint of cell (d, K) and the process it was trained with, or None if missing.
+
+    Returns (model, ck, proc, means_t, R99, path). The model is frozen; the process runs on the
+    checkpoint's own schedule (checkpoint_config) and mixing weights, so a weighted
+    model is sampled, and its exact field computed, with the weights it was trained on."""
+    pname = ckpt_process(cfg, blk)
+    path = ckpt_path(cfg.paths.checkpoints, pname, d, K, ckpt_seed(cfg, blk), variant_of(cfg))
+    if not os.path.exists(path):
+        return None
+    model, ck = load_ckpt(path, device)
+    for prm in model.parameters():
+        prm.requires_grad_(False)
+    means_t = ck["means"]
+    proc = make_process(pname, means_t, ck["variance"], int(ck["T"]), device,
+                        checkpoint_config(ck, cfg), ck.get("weights"))
+    if need_ddim and not hasattr(proc, "abar"):
+        raise RuntimeError(f"{pname}: this stage is ddim only (hall_bench also runs on flow)")
+    return model, ck, proc, means_t, float(ck["R99"]), path
 
 
 def gt_seeds(cfg, blk, d, K, proc, S, means_t, R99, device):
-    """Ground truth from Pranav's gt_cache: his eval seeds proc.seeds(n_eval, d, seed + 1) and
-    their labels (mode index, -1 = hallucinated). Checked against the model on the first
-    check_n seeds; returns None (caller falls back to its own seeds) if missing or unverified."""
+    """Ground truth from train.py's gt_cache: the eval seeds proc.seeds(n_eval, d, seed + 1) and
+    their fates (mode index, -1 = hallucinated) under the learned sampler. Checked against the
+    model on check_n seeds spread over the whole set (GPU random numbers can reproduce on the
+    first few thousand seeds and not after); returns None (caller falls back to its own seeds)
+    if missing or unverified."""
     if str(blk.get("gt_source", "cache")) != "cache":
         return None
-    path = _path(blk.get("gt_fmt", GT_FMT), cfg, d, K, int(blk.get("ckpt_seed", 0)),
-                 blk.get("variant", None))
+    path = gt_cache_path(cfg.paths.checkpoints, ckpt_process(cfg, blk), d, K, ckpt_seed(cfg, blk),
+                         variant_of(cfg))
     if not os.path.exists(path):
         print(f"[gt] no ground truth at {path}; using the model's own labels")
         return None
@@ -111,7 +136,7 @@ def gt_seeds(cfg, blk, d, K, proc, S, means_t, R99, device):
     n, seed = int(gt["n_eval"]), int(gt["seed"])
     del gt
     Z = proc.seeds(n, d, seed + 1)
-    lab = lambda Zs: torch.cat([gmm.label_fate(S.G(c), means_t, R99) for c in Zs.split(4096)])
+    lab = lambda Zs: torch.cat([core.label_fate(S.G(c), means_t, R99) for c in Zs.split(4096)])
     m = min(int(blk.get("check_n", 5000)), n)
     gck = torch.Generator(device="cpu").manual_seed(12345)   # seeds spread over the whole set
     idx = torch.randperm(n, generator=gck)[:m].to(Z.device)
@@ -120,7 +145,7 @@ def gt_seeds(cfg, blk, d, K, proc, S, means_t, R99, device):
     hidx = hidx[torch.randperm(hidx.numel(), generator=gck)[:min(1000, hidx.numel())].to(hidx.device)]
     h_agree = (lab(Z[hidx]) < 0).float().mean().item() if hidx.numel() else 1.0
     print(f"[gt] {os.path.basename(path)}: {n} seeds, {100*(L < 0).float().mean():.2f}% hallucinated; "
-          f"labels agree on {m} random seeds: {100*agree:.1f}%, his hallucinated seeds that "
+          f"labels agree on {m} random seeds: {100*agree:.1f}%, cached hallucinated seeds that "
           f"hallucinate here: {100*h_agree:.1f}%", flush=True)
     agree = min(agree, h_agree)
     if agree < float(blk.get("min_agree", 0.9)):
@@ -129,30 +154,22 @@ def gt_seeds(cfg, blk, d, K, proc, S, means_t, R99, device):
     return Z, L, f"gt_cache:{os.path.basename(path)}"
 
 
-def ckpt_process(cfg):
-    """Process whose checkpoints and sampler are used: pullback.ckpt_process, else cfg.process."""
-    return str(cfg.pullback.ckpt_process or cfg.process)
-
-
-def viz_root(cfg):
-    """paths.viz, under whatever name the current config gives it."""
-    for k in ("viz", "visualization", "figures", "figs"):
-        if k in cfg.paths:
-            return cfg.paths[k]
-    return os.path.join(cfg.paths.root, "visualization")
+def stage_dir(cfg, blk, name):
+    """output/<run_id>/<ckpt process>/<variant>/<name>, next to the run's other results."""
+    return os.path.join(cfg.paths.output, str(cfg.run_id), ckpt_process(cfg, blk), variant_of(cfg), name)
 
 
 def out_dir(cfg):
-    return os.path.join(cfg.paths.output, cfg.run_tag, cfg.process, "pullback")
+    return stage_dir(cfg, cfg.pullback, "pullback")
 
 
 def viz_dir(cfg):
-    return os.path.join(viz_root(cfg), cfg.run_tag, cfg.process, "pullback")
+    return os.path.join(out_dir(cfg), "figures")
 
 
 # ------------------------------------------------------------------ fields
 class Field:
-    """eps-prediction at integer level i, differentiable (unlike gmm.true_score)."""
+    """eps-prediction at integer level i, differentiable (unlike core.true_score)."""
 
     def __init__(self, proc, model, kind):
         self.p, self.m, self.kind = proc, model, kind
@@ -164,7 +181,10 @@ class Field:
         ab = self.p.abar[i]
         v = ab * self.p.variance + (1 - ab)
         mu = torch.sqrt(ab) * self.p.means_t
-        w = torch.softmax(-torch.cdist(x, mu) ** 2 / (2 * v), 1)
+        logits = -torch.cdist(x, mu) ** 2 / (2 * v)
+        if self.p.logw is not None:                          # mixing weights (weighted variant)
+            logits = logits + self.p.logw
+        w = torch.softmax(logits, 1)
         return -torch.sqrt(1 - ab) * (w @ mu - x) / v
 
 
@@ -176,7 +196,7 @@ class Sampler:
         self.ab = proc.abar
 
     def step(self, x, i, e=None):
-        return self.p._ddim_step(x, i, self.F.eps(x, i) if e is None else e)
+        return ddim_step(self.p, x, i, self.F.eps(x, i) if e is None else e)
 
     def flow(self, x, i_start):
         for i in range(int(i_start), 0, -1):
@@ -254,11 +274,11 @@ def sample_iq(S, gradE, z, lam, window):
     for i in range(S.T - 1, 0, -1):
         with torch.no_grad():
             e0 = S.F.eps(x, i)
-            x_plain = S.p._ddim_step(x, i, e0)
+            x_plain = ddim_step(S.p, x, i, e0)
         if S.t_of(i) <= window and lam > 0:
             e = e0 + lam * torch.sqrt(1 - S.ab[i]) * gradE(x, i)
             with torch.no_grad():
-                xn = S.p._ddim_step(x, i, e)
+                xn = ddim_step(S.p, x, i, e)
         else:
             xn = x_plain
         push.append((xn - x_plain).norm(dim=1))
@@ -337,25 +357,19 @@ def cert_time(S, Tr, mu_tgt, R99):
 
 # ------------------------------------------------------------------ one cell
 def pullback_one(cfg, d, K, device):
-    pc, pname = cfg.pullback, ckpt_process(cfg)
-    path = resolve_ckpt(cfg, pc, pname, d, K)
-    if not os.path.exists(path):
-        print(f"[pullback] d={d} K={K}: no checkpoint at {path}, skipped")
+    pc = cfg.pullback
+    got = load_cell(cfg, pc, d, K, device)
+    if got is None:
+        print(f"[pullback] d={d} K={K}: no {ckpt_process(cfg, pc)} checkpoint for seed "
+              f"{ckpt_seed(cfg, pc)} ({variant_of(cfg)}), skipped")
         return None
-    model, ck = checkpoint.load(path, device)
-    for prm in model.parameters():
-        prm.requires_grad_(False)
-    means_t, R99, variance = ck["means"], float(ck["R99"]), ck["variance"]
-    proc = make_process(pname, means_t, variance, ck["T"], device, cfg)
-    use_ckpt_schedule(proc, ck)
-    if not hasattr(proc, "_ddim_step"):
-        raise RuntimeError("pullback_iq supports the ddim process only")
+    model, ck, proc, means_t, R99, path = got
     S = Sampler(proc, Field(proc, model, str(pc.field)))
     FE = Field(proc, model, str(pc.iq_energy))
     T = S.T
     t0 = time.time()
 
-    # 1. intermodal hallucinations: from Pranav's ground truth when available
+    # 1. intermodal hallucinations: from the cached ground truth when available
     got = gt_seeds(cfg, pc, d, K, proc, S, means_t, R99, device)
     if got is not None:
         Zall, Lall, gt_src = got
@@ -397,7 +411,7 @@ def pullback_one(cfg, d, K, device):
     MC = torch.randn(int(pc.n_mc) // 2, d, generator=g, device=device)
     MC = torch.cat([MC, -MC])                                # antithetic: no side bias
     gradE = make_energy(S, FE, i0, MC)
-    lab = lambda x: gmm.label_fate(x, means_t, R99)
+    lab = lambda x: core.label_fate(x, means_t, R99)
     lam, scan = float(pc.lam), {}
     if lam <= 0:
         for l_ in pc.lam_grid:
@@ -547,7 +561,7 @@ SUMMARY_KEYS = ["d", "K", "ground_truth", "n_seeds", "n_study", "hall_rate", "de
 
 
 def run(cfg):
-    device = utils.get_device(cfg.device)
+    device = core.get_device(cfg.device)
     rows = []
     for d in cfg.pullback.d:
         for K in cfg.pullback.K:
@@ -812,7 +826,7 @@ def viz(cfg):
 # ==================================================================================== #
 #  stage: pullback_sweep — does the Prop. 4 repair scale over the (d, K) grid?          #
 # ==================================================================================== #
-"""For every cell of psweep.d x psweep.K, on the sweep.T_train checkpoint:
+"""For every cell of psweep.d x psweep.K, on the ddim checkpoint of seed psweep.ckpt_seed:
 
   1. draw psweep.n_eval seeds and run the learned sampler to x_0: base hallucination rate.
   2. for every hallucinating seed, target the nearest mode and compute the pulled-back
@@ -826,36 +840,31 @@ def viz(cfg):
 
 Only the hallucinating seeds are touched, so the rate can only fall; the quantity of
 interest is how much of it the normal removes, and how that compares with the control and
-with the eps needed. Results: output/<run_tag>/<process>/pullback_sweep/.
+with the eps needed. Results: output/<run_id>/ddim/<variant>/pullback_sweep/.
 """
 
 
 def sweep_dir(cfg):
-    return os.path.join(cfg.paths.output, cfg.run_tag, cfg.process, "pullback_sweep")
+    return stage_dir(cfg, cfg.psweep, "pullback_sweep")
 
 
 def sweep_one(cfg, d, K, device):
     pc = cfg.psweep
-    pname = str(pc.ckpt_process or cfg.process)
-    path = resolve_ckpt(cfg, pc, pname, d, K)
-    if not os.path.exists(path):
-        print(f"[pullback_sweep] d={d} K={K}: no checkpoint at {path}, skipped")
+    got = load_cell(cfg, pc, d, K, device)
+    if got is None:
+        print(f"[pullback_sweep] d={d} K={K}: no {ckpt_process(cfg, pc)} checkpoint for seed "
+              f"{ckpt_seed(cfg, pc)} ({variant_of(cfg)}), skipped")
         return None
-    model, ck = checkpoint.load(path, device)
-    for prm in model.parameters():
-        prm.requires_grad_(False)
-    means_t, R99 = ck["means"], float(ck["R99"])
-    proc = make_process(pname, means_t, ck["variance"], ck["T"], device, cfg)
-    use_ckpt_schedule(proc, ck)
+    model, ck, proc, means_t, R99, path = got
     S = Sampler(proc, Field(proc, model, str(pc.field)))
     t0 = time.time()
 
     got = gt_seeds(cfg, pc, d, K, proc, S, means_t, R99, device)
-    if got is not None:                                      # Pranav's ground truth
+    if got is not None:                                      # cached ground truth
         Z, lab0, gt_src = got
     else:
         Z = proc.seeds(int(pc.n_eval), d, int(pc.seed) + 17)
-        lab0 = torch.cat([gmm.label_fate(S.G(c), means_t, R99) for c in Z.split(int(pc.chunk))])
+        lab0 = torch.cat([core.label_fate(S.G(c), means_t, R99) for c in Z.split(int(pc.chunk))])
         gt_src = "model labels"
     hall = lab0 < 0
     n_h = int(hall.sum())
@@ -877,7 +886,7 @@ def sweep_one(cfg, d, K, device):
     u = u / u.norm(dim=1, keepdim=True)
 
     def rate(z_new):
-        lab = torch.cat([gmm.label_fate(S.G(c), means_t, R99) for c in z_new.split(int(pc.chunk))])
+        lab = torch.cat([core.label_fate(S.G(c), means_t, R99) for c in z_new.split(int(pc.chunk))])
         cov = torch.bincount(lab[lab >= 0], minlength=K).float()
         return lab, cov
 
@@ -920,7 +929,7 @@ SWEEP_KEYS = ["d", "K", "T", "ground_truth", "n_eval", "n_hall", "base_hall_rate
 
 
 def run_sweep(cfg):
-    device = utils.get_device(cfg.device)
+    device = core.get_device(cfg.device)
     rows = []
     for d in cfg.psweep.d:
         for K in cfg.psweep.K:
@@ -947,7 +956,7 @@ def sweep_viz(cfg):
     if not rows:
         print("[pullback_sweep_viz] nothing to plot")
         return {}
-    out = os.path.join(viz_root(cfg), cfg.run_tag, cfg.process, "pullback_sweep")
+    out = os.path.join(sweep_dir(cfg), "figures")
     os.makedirs(out, exist_ok=True)
     ds = sorted({r["d"] for r in rows})
     Ks = sorted({r["K"] for r in rows})

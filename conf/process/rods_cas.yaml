@@ -1,0 +1,15 @@
+# process/rods_cas - RODS, curvature-aligned shift (Tian et al. 2025) as a sampling-time correction on ddim: same network,
+# schedule and exact field (the ddim checkpoints are reused), only sample() differs.
+# Run with code/baselines/main.py (baselines/process.py registers it).
+
+defaults:
+  - ddim
+  - _self_
+
+name: rods_cas
+rho_frac: 0.15      # RODS perturbation radius, as a fraction of the smallest mode separation
+q_pct: 99.0         # PER-STEP quantile threshold: 99 -> ~T/100 corrections per trajectory
+n_mc: 8             # IQ: noise draws for the DSM/LID estimate (paper: 32)
+lam: 0.1            # IQ: guidance magnitude ratio
+n_calibrate: 2000   # seeds used to calibrate the per-step thresholds
+chunk: 20000        # seeds per corrected-sampling chunk

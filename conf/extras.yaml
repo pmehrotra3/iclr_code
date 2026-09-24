@@ -1,0 +1,99 @@
+# extras - the config of code/baselines/main.py: everything in config.yaml plus the blocks of
+# the pullback, pullback_sweep, hall_bench and basin stages. These blocks only steer those
+# stages, so they are not part of the run's recorded settings (output/<run_id>/run.json).
+# Checkpoints and ground truth: checkpoints/<ckpt_process>/<variant>/, seed ckpt_seed
+# (null = seed); <variant> follows data.weighted.
+
+defaults:
+  - config
+  - _self_
+
+# ------------------------------------------------------------ Prop. 4 normal vs IQ (stage: pullback)
+pullback:
+  d: ${sweep.d}             # cells to study (ddim only)
+  K: [2, 4]
+  ckpt_process: ddim        # whose checkpoints / gt_cache
+  ckpt_seed: null           # repeat seed of the checkpoint; null = seed
+  gt_source: cache          # cache: the cell's gt_cache (verified); anything else: model labels
+  check_n: 5000             # seeds used to verify the gt_cache against the model
+  min_agree: 0.9            # below this agreement the gt_cache is not used
+  n_seeds: 200000           # seeds drawn to find intermodal hallucinations (without a gt_cache)
+  n_study: 40               # hallucinated seeds studied per cell
+  deep_mult: 1.5            # intermodal = farther than deep_mult * R99 from every mode
+  field: learned            # learned | true   -- sampler whose hallucinations we study
+  iq_energy: learned        # learned | true   -- denoiser inside IQ's LID energy (true = exact GMM)
+  lam: 0.0                  # IQ strength; 0 = best-rescuing value from lam_grid
+  lam_grid: [0.001, 0.002, 0.005, 0.01, 0.02, 0.05]
+  iq_t0: 0.02               # time at which the DSM loss (LID estimate) is evaluated
+  iq_window: 1.0            # IQ active for t <= iq_window (1.0 = whole run)
+  n_mc: 64                  # noise draws in the LID estimate (antithetic pairs)
+  n_rand: 16                # random directions per seed for the efficiency baseline
+  eps_max: 3.0              # largest seed step searched along a direction
+  n_eps_grid: 80
+  n_tan: 4                  # tangent-control directions per seed
+  tang_mult: 1.0            # tangent step, in units of eps*
+  newton_iters: 4           # per-step Newton iterations when inverting IQ endpoints
+  animate: true             # pullback_viz: d = 2 animation (gif, + mp4 with ffmpeg)
+  anim_frames: 120
+  seed: 0
+
+# ------------------------------------------------------------ repair over (d, K) (stage: pullback_sweep)
+psweep:
+  d: [2, 4, 8, 16, 32]
+  K: [2, 4, 8, 16]
+  ckpt_process: ddim
+  ckpt_seed: null
+  gt_source: cache
+  check_n: 5000
+  min_agree: 0.9
+  n_eval: 20000             # seeds per cell (without a gt_cache)
+  field: learned
+  eps_grid: [0.003, 0.01, 0.03, 0.06, 0.1, 0.2, 0.3, 0.5]   # fixed seed steps along -n
+  chunk: 4096               # seeds per sampling chunk
+  grad_chunk: 64            # seeds per VJP (backprop through all T steps)
+  seed: 0
+
+# ------------------------------------------------------------ repair benchmark (stage: hall_bench)
+bench:
+  d: [2, 4, 8, 16, 32, 64]
+  K: [2, 4, 8, 16]
+  ckpt_process: null        # null = the selected process if ddim or flow (process=flow), else ddim
+  ckpt_seed: null
+  gt_source: cache          # cache | learned | true   (cache falls back to learned if unusable)
+  check_n: 5000
+  min_agree: 0.9
+  n: 200000                 # seeds per cell (capped by what the gt cache holds, then topped up)
+  max_hall_rate: 0.5        # cells hallucinating more than this are skipped (broken model)
+  tune_n: 1000              # hallucinated seeds used to pick each method's knob
+  chunk: 4096
+  grad_chunk: 64
+  ours: true
+  eps_grid: [0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1.2]   # ours: fixed step along -n
+  iq: true
+  iq_window: 0.2            # IQ only for t <= this, when iq_windows is null
+  iq_windows: [0.8, 0.6, 0.4, 0.2]
+  iq_t0: 0.02
+  n_mc: 32
+  lam_grid: [0.001, 0.002, 0.005, 0.01, 0.02, 0.05]
+  rods: true
+  rho_grid: [0.01, 0.03, 0.1, 0.3]                       # RODS perturbation radius
+  rods_thresh: 0.0          # curvature-index threshold; 0 = correct at every step in the window
+  rods_window: [0.0, 1.0]   # fraction of the run where RODS corrects (paper B.5 uses [0.1, 0.5])
+  anim_d: [2]               # hall_bench_anim: cells to animate
+  anim_n: 3                 #   seeds per class (interpolation / invalid)
+  anim_eps: null            #   null = the benchmark's best eps
+  anim_frames: null         #   null = pullback.anim_frames
+  traj:                     # trajectory cache: every state of every hallucinated seed, no step skipped
+    save: true              #   while hall_bench runs; stage hall_bench_traj does it for a finished run
+    methods: [original, ours]   # families to cache: original | ours (every eps) | iq (every window) | rods
+    dtype: float32          #   float16 halves the size but is too coarse to resolve small eps
+  seed: 0
+
+# ------------------------------------------------------------ every sampler vs the exact field (stage: basin)
+basin:
+  d: ${sweep.d}
+  K: ${sweep.K}
+  seeds: null               # null = the run's repeat seeds (seed, seed+100, ...)
+  n_eval: null              # null = eval.n_eval_per_mode * K
+  samplers: [ddim, rods_cas, rods_sas, iq]
+  tag: null                 # basin_<tag>.json

@@ -1,15 +1,16 @@
-"""stages/hall_bench.py — how many ground-truth hallucinations does each method remove? (DDIM)
+"""hall_bench.py — how many ground-truth hallucinations does each method remove? (DDIM or flow)
 
-Checkpoints come from checkpoints/<process>/ like every other stage, and are sampled with the
-schedule stored in the checkpoint (use_ckpt_schedule), so Pranav's checkpoints can simply be
-dropped into that folder. His gt_cache labels are used as the ground truth after an agreement
-check (bench.backend = pranav instead imports his code directly; not needed).
+Checkpoints and ground truth are the repo's own, made by stages=[train]:
+checkpoints/ddim/<variant>/checkpoints/model_d<d>_K<K>_s<seed>.pt, sampled on the schedule and
+mixing weights stored in the checkpoint, and gt_cache/d<d>_K<K>_s<seed>.pt, whose labels are used
+as the ground truth after an agreement check (seed = bench.ckpt_seed, default cfg.seed;
+<variant> follows data.weighted).
 
 For every cell of bench.d x bench.K:
 
   1. Ground truth. Take the seeds whose ground-truth fate is "hallucinated" (label -1):
-       bench.gt_source = cache   : read bench.gt_fmt (Pranav's gt_cache), which must hold the
-                                   seeds and either their labels or their endpoints;
+       bench.gt_source = cache   : the cell's gt_cache (fates of proc.seeds(n_eval, d, seed + 1)
+                                   under the learned sampler, from train.py);
                          learned : run the learned sampler on bench.n seeds and label the
                                    endpoints (nearest mode within R99, else -1);
                          true    : the same with the exact-GMM field.
@@ -28,135 +29,70 @@ For every cell of bench.d x bench.K:
      seeds, then the chosen value is run on all of them.
 
 Only ground-truth hallucinations are touched, so this is a repair benchmark for every method.
-Writes output/<run_tag>/<process>/hall_bench/{summary.csv,cells.json} after every cell, and
+
+Flow matching: process=flow benchmarks the flow checkpoints (checkpoints/flow/<variant>/) with the
+same four methods; samplers.py translates IQ and RODS through the exact velocity <-> score
+relations of the OT path, and every setting (eps, lam, rho, windows as the last w of the run)
+means the same for both samplers.
+Writes output/<run_id>/ddim/<variant>/hall_bench/{summary.csv,cells.json} after every cell, and
 skips cells already in cells.json, so re-running the same command resumes a crashed run.
 bench.grad_chunk bounds the seeds per autograd pass (the normal backprops through every step).
 Stage hall_bench_viz draws the table.
 
-    python code/ddim/main.py 'stages=[hall_bench,hall_bench_viz]' sweep.T_train=100
+Trajectories (bench.traj.save): every state of every hallucinated seed's trajectory, for the
+original sampler and each method in bench.traj.methods, is cached while the cell runs:
+hall_bench/traj/d<d>_K<K>/<method>.npy, shape (n_hall, T, d), [:, 0] the start and [:, -1] the
+final sample, no step skipped; meta.npz holds the seeds, normals, classes, final fates and knobs.
+Stage hall_bench_traj caches them for a finished run (same seeds, the knobs it chose, no tuning),
+and load_traj(cell_dir) reads a cell back.
+
+    python code/baselines/main.py 'stages=[hall_bench,hall_bench_viz]'
+    python code/baselines/main.py 'stages=[hall_bench]' 'bench.d=[2]' 'bench.K=[2]' run_id=bench_test
 """
 from __future__ import annotations
 import os
-import sys
 import csv
 import json
+import shutil
 import time
-import importlib
-from types import SimpleNamespace
 import numpy as np
 import torch
 
-from common import gmm, checkpoint, utils
-from common.process import make_process
-from common.stages.pullback_iq import (Field, Sampler, pulled_normal, make_energy, sample_iq,
-                                       viz_root, use_ckpt_schedule, level)
+import core
+from train import gt_cache_path, variant_of
+from .pullback_iq import (pulled_normal, level, load_cell, ckpt_process, ckpt_seed, stage_dir,
+                          C_OG, C_IQ, C_US)
+from .samplers import make_sampler, iq_energy, sample_iq
 
 
 def bench_dir(cfg):
-    return os.path.join(cfg.paths.output, cfg.run_tag, cfg.process, "hall_bench")
+    return stage_dir(cfg, cfg.bench, "hall_bench")
 
 
-def _fmt(s, cfg, d, K):
-    T = int(cfg.sweep.T_train) if "sweep" in cfg and "T_train" in cfg.sweep else 0
-    p = os.path.expanduser(str(s).format(
-        root=cfg.paths.root, home=os.path.expanduser("~"), d=d, K=K,
-        seed=int(cfg.bench.ckpt_seed), T=T, process=str(cfg.bench.ckpt_process or cfg.process)))
-    v = cfg.bench.get("variant", None)                      # weighted | unweighted | ...
-    if v and v != "weighted":
-        p = p.replace("/weighted/", f"/{v}/")
-    return p
-
-
-# ------------------------------------------------------------------ Pranav's checkpoints
-def _pranav(cfg):
-    """Import Pranav's own core + process factory, so his checkpoints are loaded and sampled
-    by his code (his ScoreNet, his noise schedule, his seeds)."""
-    code = _fmt(cfg.bench.get("pranav_code", "~/pranav/code"), cfg, 0, 0)
-    if not os.path.isdir(code):
-        raise FileNotFoundError(f"bench.pranav_code={code} does not exist; see the setup notes")
-    if code not in sys.path:
-        sys.path.append(code)
-    return importlib.import_module("core"), importlib.import_module("processes.factory")
-
-
-def load_pranav(cfg, d, K, device):
-    pcore, pfac = _pranav(cfg)
-    path = _fmt(cfg.bench.ckpt_fmt, cfg, d, K)
-    if not os.path.exists(path):
-        return None
-    ck = torch.load(path, map_location=device, weights_only=False)
-    a = ck["arch"]
-    model = pcore.ScoreNet(ck["d"], a["h"], a["nb"], a["td"]).to(device)
-    model.load_state_dict(ck["state_dict"])
-    model.eval()
-    for prm in model.parameters():
-        prm.requires_grad_(False)
-    pcfg = (ck.get("config") or {}).get("process") or {"beta_min": 1e-4, "beta_max": 0.02,
-                                                       "true_order": "heun"}
-    means = ck["means"].to(device)
-    proc = pfac.make_process("ddim", means, ck["variance"], int(ck["T"]), device,
-                             SimpleNamespace(process=SimpleNamespace(**pcfg)), ck.get("weights"))
-
-    def _ddim_step(x, i, e, _p=proc):                      # his sampler's update, one step
-        ab, abp = _p.abar[i], _p.abar[i - 1]
-        x0 = (x - torch.sqrt(1 - ab) * e) / torch.sqrt(ab)
-        return torch.sqrt(abp) * x0 + torch.sqrt(1 - abp) * e
-    proc._ddim_step = _ddim_step
-    return model, ck, proc, means, float(ck["R99"]), path
-
-
-def _ckpt_path(cfg, d, K):
-    p = _fmt(cfg.bench.ckpt_fmt, cfg, d, K) if cfg.bench.ckpt_fmt else ""
-    if p and os.path.exists(p):
-        return p
-    return utils.ckpt_path(cfg.paths.checkpoints, str(cfg.bench.ckpt_process or cfg.process),
-                           d, K, int(cfg.sweep.T_train))
+def fig_dir(cfg):
+    return os.path.join(bench_dir(cfg), "figures")
 
 
 # ------------------------------------------------------------------ ground truth
-SEED_KEYS = ("Z", "z", "seeds", "seed", "x_T", "xT", "X_T", "noise", "z0", "Z0", "init")
-LABEL_KEYS = ("labels", "label", "y", "fate", "fates", "gt", "gt_labels", "labels_true", "L")
-END_KEYS = ("X0", "x0", "X", "endpoints", "samples", "Xf", "x_0")
-
-
-def _find(obj, keys):
-    if isinstance(obj, dict):
-        for k in keys:
-            if k in obj and torch.is_tensor(obj[k]):
-                return k, obj[k]
-        for v in obj.values():                               # one level of nesting
-            if isinstance(v, dict):
-                r = _find(v, keys)
-                if r[0] is not None:
-                    return r
-    return None, None
-
-
-def _bget(b, k, v):
-    return b.get(k, v)
-
-
 def ground_truth(cfg, d, K, S, S_true, means_t, R99, device, proc=None):
     """Seeds whose ground-truth fate is -1, plus where that ground truth came from.
 
-    Pranav backend: his gt_cache holds labels for proc.seeds(n_eval, d, seed + 1), drawn by his
-    own Process.seeds (what his train/evaluate do), so the seeds are regenerated the same way
-    and checked against his model before the labels are trusted."""
+    The gt_cache holds labels for proc.seeds(n_eval, d, seed + 1), drawn by Process.seeds (what
+    train/evaluate do), so the seeds are regenerated the same way and checked against the model
+    before the labels are trusted."""
     b = cfg.bench
     src = str(b.gt_source)
     cap = None if b.get("n", None) in (None, "null", 0) else int(b.n)
-    lab = lambda Z: torch.cat([gmm.label_fate(S.G(c), means_t, R99) for c in Z.split(int(b.chunk))])
+    lab = lambda Z: torch.cat([core.label_fate(S.G(c), means_t, R99) for c in Z.split(int(b.chunk))])
     if src == "cache":
-        path = _fmt(b.gt_fmt, cfg, d, K)
+        path = gt_cache_path(cfg.paths.checkpoints, ckpt_process(cfg, b), d, K, ckpt_seed(cfg, b),
+                             variant_of(cfg))
         gt = None
         try:
             gt = torch.load(path, map_location="cpu", weights_only=False)
             L = gt["gt"].long().reshape(-1)
             n_eval, seed = int(gt["n_eval"]), int(gt["seed"])
-            if proc is not None and hasattr(proc, "seeds"):
-                Z = proc.seeds(n_eval, d, seed + 1)          # exactly his eval seeds
-            else:
-                Z = utils.seeds(n_eval, d, seed + 1, device)
+            Z = proc.seeds(n_eval, d, seed + 1)              # exactly train.py's eval seeds
             n = n_eval if cap is None else min(cap, n_eval)
             Z, L = Z[:n].contiguous(), L[:n].to(device)
             n_gt = n
@@ -172,8 +108,8 @@ def ground_truth(cfg, d, K, S, S_true, means_t, R99, device, proc=None):
             hidx = torch.nonzero(L < 0).flatten()
             hidx = hidx[torch.randperm(hidx.numel(), generator=gck)[:min(1000, hidx.numel())].to(hidx.device)]
             h_agree = (lab(Z[hidx]) < 0).float().mean().item() if hidx.numel() else 1.0
-            print(f"[hall_bench]   gt vs his sampler: {100*agree:.2f}% of labels agree on {m} random seeds; "
-                  f"{100*h_agree:.1f}% of his hallucinated seeds hallucinate here")
+            print(f"[hall_bench]   gt vs the sampler: {100*agree:.2f}% of labels agree on {m} random seeds; "
+                  f"{100*h_agree:.1f}% of the cached hallucinated seeds hallucinate here")
             agree = min(agree, h_agree)
             if agree < float(b.get("min_agree", 0.9)):
                 raise ValueError(f"only {100*agree:.1f}% of labels agree: seeds not reproduced")
@@ -181,21 +117,20 @@ def ground_truth(cfg, d, K, S, S_true, means_t, R99, device, proc=None):
             how = f"gt_cache:{os.path.basename(path)} ({n_gt} seeds)"
             if cap is not None and n_gt < cap:                  # top up to bench.n seeds
                 extra = cap - n_gt
-                Zx = (proc.seeds(extra, d, seed + 10007) if proc is not None
-                      else utils.seeds(extra, d, seed + 10007, device))
+                Zx = proc.seeds(extra, d, seed + 10007)
                 Z, L = torch.cat([Z, Zx]), torch.cat([L, lab(Zx)])
                 how += f" + {extra} model-labelled"
             return Z, L, how
         except Exception as e:
-            print(f"[hall_bench]   gt cache unusable ({path}): {e}. Labelling with his sampler instead.")
+            print(f"[hall_bench]   gt cache unusable ({path}): {e}. Labelling with the sampler instead.")
             gt = None
             src = "learned"
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
     n = cap or 200000
-    Z = proc.seeds(n, d, int(b.seed) + 17) if proc is not None else utils.seeds(n, d, int(b.seed) + 17, device)
+    Z = proc.seeds(n, d, int(b.seed) + 17)
     SS = S_true if src == "true" else S
-    L = torch.cat([gmm.label_fate(SS.G(c), means_t, R99) for c in Z.split(int(b.chunk))])
+    L = torch.cat([core.label_fate(SS.G(c), means_t, R99) for c in Z.split(int(b.chunk))])
     return Z, L, f"{src}-sampler on {n} seeds"
 
 
@@ -222,29 +157,28 @@ def tube_class(X, means_t, R99):
 
 
 # ------------------------------------------------------------------ RODS
-def score(S, x, i):
-    return -S.F.eps(x, i) / torch.sqrt(1 - S.ab[i])
-
-
 def grad_score_norm(S, x, i):
     x = x.detach().clone().requires_grad_(True)
     with torch.enable_grad():
-        (g,) = torch.autograd.grad(score(S, x, i).norm(dim=1).sum(), x)
+        (g,) = torch.autograd.grad(S.score(x, i).norm(dim=1).sum(), x)
     return g
 
 
-def sample_rods(S, z, rho, kind, thresh, window, chunk):
+def sample_rods(S, z, rho, kind, thresh, window, chunk, record=None):
     """RODS-SAS / RODS-CAS on the DDIM sampler; correction only in the step window (fractions
-    of the run, 0 = first step)."""
+    of the run, 0 = first step). record(traj) gets every chunk's states, (T, B, d), if given."""
     T = S.T
     lo, hi = float(window[0]), float(window[1])
     out = []
     for x in z.split(chunk):
+        xs = [x] if record is not None else None
         for k, i in enumerate(range(T - 1, 0, -1)):
             frac = k / max(1, T - 2)
             if rho <= 0 or not (lo <= frac <= hi):
                 with torch.no_grad():
                     x = S.step(x, i)
+                if xs is not None:
+                    xs.append(x)
                 continue
             gn = grad_score_norm(S, x, i)
             u = gn / gn.norm(dim=1, keepdim=True).clamp_min(1e-12)
@@ -255,39 +189,108 @@ def sample_rods(S, z, rho, kind, thresh, window, chunk):
                 on = torch.ones(x.shape[0], dtype=torch.bool, device=x.device)
             with torch.no_grad():
                 if kind == "sas":
-                    s = score(S, x, i)
+                    s = S.score(x, i)
                     delta = -rho * s / s.norm(dim=1, keepdim=True).clamp_min(1e-12)
                 else:                                        # cas
                     delta = rho * u
-                e_hat = S.F.eps(x + delta, i)
-                e = torch.where(on[:, None], e_hat, S.F.eps(x, i))
-                x = S.p._ddim_step(x, i, e)
+                e_hat = S.pred(x + delta, i)                 # the prediction at the moved point
+                e = torch.where(on[:, None], e_hat, S.pred(x, i))
+                x = S.update(x, i, e)
+            if xs is not None:
+                xs.append(x)
+        if xs is not None:
+            record(torch.stack(xs))
         out.append(x)
     return torch.cat(out)
 
 
+# ------------------------------------------------------------------ trajectory cache
+def traj_dir(cfg, d, K):
+    return os.path.join(bench_dir(cfg), "traj", f"d{d}_K{K}")
+
+
+class TrajCache:
+    """Every state of every hallucinated seed's trajectory, one .npy per method.
+
+    <traj_dir>/<name>.npy has shape (n_hall, T, d): along axis 1, row k is level T-1-k, so [:, 0]
+    is where sampling starts (the seed; the moved seed for ours) and [:, -1] the final sample.
+    Seeds are in the order of meta.npz["seed_index"]. Chunks are written straight to disk as
+    they are produced (memory-mapped), and meta.npz / meta.json are written last, so a cell
+    without them is incomplete. Names: original, ours_eps<e>, iq_t<w>, rods_sas, rods_cas."""
+
+    FAMILIES = ("original", "ours", "iq", "rods")
+
+    def __init__(self, cfg, d, K, n, T):
+        c = cfg.bench.get("traj", None) or {}
+        self.methods = {str(m) for m in (c.get("methods", None) or ["original", "ours"])}
+        bad = self.methods - set(self.FAMILIES)
+        if bad:
+            raise ValueError(f"bench.traj.methods: unknown {sorted(bad)}; choose from {self.FAMILIES}")
+        self.dtype = np.dtype(str(c.get("dtype", "float32")))
+        self.dir = traj_dir(cfg, d, K)
+        self.shape = (int(n), int(T), int(d))
+        self._mm = {}
+
+    def wants(self, family):
+        return family in self.methods
+
+    def check_disk(self, n_sets):
+        need = int(np.prod(self.shape)) * self.dtype.itemsize * n_sets
+        os.makedirs(self.dir, exist_ok=True)
+        free = shutil.disk_usage(self.dir).free
+        if free < 1.05 * need + 2 ** 30:
+            raise RuntimeError(
+                f"[hall_bench] the trajectories of this cell need {need / 2**30:.2f} GB, only "
+                f"{free / 2**30:.2f} GB free under {self.dir}. Free space, or use fewer "
+                f"bench.traj.methods, or bench.traj.save=false.")
+        return need
+
+    def write(self, name, tr):
+        """Append a chunk: tr is (T, B, d), the next B seeds in order."""
+        if name not in self._mm:
+            path = os.path.join(self.dir, f"{name}.npy")
+            self._mm[name] = [np.lib.format.open_memmap(path, mode="w+", dtype=self.dtype,
+                                                        shape=self.shape), 0]
+        mm, s = self._mm[name]
+        B = int(tr.shape[1])
+        mm[s:s + B] = tr.detach().to("cpu", torch.float32).numpy().transpose(1, 0, 2)
+        self._mm[name][1] = s + B
+
+    def close(self, meta, info):
+        files = {}
+        for name, (mm, s) in self._mm.items():
+            if s != self.shape[0]:
+                raise RuntimeError(f"trajectory {name}: wrote {s} of {self.shape[0]} seeds")
+            mm.flush()
+            files[name] = f"{name}.npy"
+        self._mm.clear()
+        np.savez(os.path.join(self.dir, "meta.npz"), **meta)
+        info = dict(info, files=files, shape=list(self.shape), dtype=str(self.dtype),
+                    layout="(n_hall, T, d); [:, k] is level T-1-k: [:, 0] start, [:, -1] final sample")
+        json.dump(info, open(os.path.join(self.dir, "meta.json"), "w"), indent=2)
+        return files
+
+
+def load_traj(cell_dir):
+    """One cached cell: (meta, info, {name: read-only memmap (n_hall, T, d)})."""
+    meta = dict(np.load(os.path.join(cell_dir, "meta.npz")))
+    info = json.load(open(os.path.join(cell_dir, "meta.json")))
+    return meta, info, {m: np.load(os.path.join(cell_dir, f), mmap_mode="r") for m, f in info["files"].items()}
+
+
 # ------------------------------------------------------------------ one cell
-def bench_one(cfg, d, K, device):
+def bench_one(cfg, d, K, device, knobs=None, save=None):
+    """One cell. knobs: a finished cell's row, whose lam / rho are then used instead of tuning
+    (stage hall_bench_traj). save: cache trajectories (default bench.traj.save)."""
     b = cfg.bench
-    if str(b.get("backend", "legacy")) == "pranav":
-        got = load_pranav(cfg, d, K, device)
-        if got is None:
-            print(f"[hall_bench] d={d} K={K}: no checkpoint at {_fmt(b.ckpt_fmt, cfg, d, K)}, skipped")
-            return None
-        model, ck, proc, means_t, R99, path = got
-    else:                                                    # legacy: this repo's own checkpoints
-        path = _ckpt_path(cfg, d, K)
-        if not os.path.exists(path):
-            print(f"[hall_bench] d={d} K={K}: no checkpoint at {path}, skipped")
-            return None
-        model, ck = checkpoint.load(path, device)
-        for prm in model.parameters():
-            prm.requires_grad_(False)
-        means_t, R99 = ck["means"], float(ck["R99"])
-        proc = make_process(str(b.ckpt_process or cfg.process), means_t, ck["variance"], ck["T"], device, cfg)
-        use_ckpt_schedule(proc, ck)
-    S = Sampler(proc, Field(proc, model, "learned"))
-    S_true = Sampler(proc, Field(proc, model, "true"))
+    got = load_cell(cfg, b, d, K, device, need_ddim=False)
+    if got is None:
+        print(f"[hall_bench] d={d} K={K}: no {ckpt_process(cfg, b)} checkpoint for seed "
+              f"{ckpt_seed(cfg, b)} ({variant_of(cfg)}), skipped")
+        return None
+    model, ck, proc, means_t, R99, path = got
+    S = make_sampler(proc, model, "learned")
+    S_true = make_sampler(proc, model, "true")
     t0 = time.time()
     C = int(b.chunk)                                         # plain sampling
     Cg = int(b.get("grad_chunk", 64))                        # anything with autograd
@@ -296,9 +299,9 @@ def bench_one(cfg, d, K, device):
     hall = L < 0
     zh = Z[hall]
     N, n_h = int(Z.shape[0]), int(hall.sum())
-    print(f"[hall_bench] d={d:>3} K={K:>2} T={S.T}: {n_h}/{N} ground-truth hallucinations "
+    print(f"[hall_bench] {S.kind} d={d:>3} K={K:>2} T={S.T}: {n_h}/{N} ground-truth hallucinations "
           f"({100*n_h/max(N,1):.2f}%)  [{how}]", flush=True)
-    row = {"d": d, "K": K, "T": int(S.T), "N": N, "gt": how, "n_hall": n_h}
+    row = {"d": d, "K": K, "T": int(S.T), "N": N, "gt": how, "n_hall": n_h, "sampler": S.kind}
     if n_h == 0:
         return row
     if n_h / max(N, 1) > float(b.get("max_hall_rate", 0.5)):
@@ -307,13 +310,38 @@ def bench_one(cfg, d, K, device):
         row["skipped"] = "hall rate too high"
         return None
 
-    def G(z):
-        return torch.cat([S.G(c) for c in z.split(C)])
+    tc_cfg = b.get("traj", None) or {}
+    save = bool(tc_cfg.get("save", False)) if save is None else bool(save)
+    tc = TrajCache(cfg, d, K, n_h, S.T) if save else None
+    wants = lambda fam: tc is not None and tc.wants(fam)     # noqa: E731
+    run_ours = bool(b.get("ours", True)) and (knobs is None or wants("ours"))
+    run_iq = bool(b.get("iq", True)) and (knobs is None or wants("iq"))
+    run_rods = bool(b.get("rods", True)) and (knobs is None or wants("rods"))
+    windows = [float(w) for w in (b.get("iq_windows", None) or [b.iq_window])]
+    if tc is not None:
+        n_sets = (int(wants("original")) + len(b.eps_grid) * int(run_ours and wants("ours"))
+                  + len(windows) * int(run_iq and wants("iq")) + 2 * int(run_rods and wants("rods")))
+        need = tc.check_disk(n_sets)
+        print(f"[hall_bench]   caching {n_sets} trajectory sets of {n_h}x{S.T}x{d} "
+              f"({need / 2**30:.2f} GB) in {tc.dir}", flush=True)
+    fates = {}
+
+    def G(z, name=None):
+        """Endpoints of the learned sampler; with a name, every state is cached as well."""
+        if name is None:
+            return torch.cat([S.G(c) for c in z.split(C)])
+        ends = []
+        for c in z.split(C):
+            tr = S.traj(c)                                   # the same steps as S.G
+            tc.write(name, tr)
+            ends.append(tr[-1])
+        return torch.cat(ends)
 
     def still(z_end):                                        # still hallucinating
-        return int((gmm.label_fate(z_end, means_t, R99) < 0).sum())
+        return int((core.label_fate(z_end, means_t, R99) < 0).sum())
 
-    X_orig = G(zh)
+    X_orig = G(zh, "original" if wants("original") else None)
+    fates["original"] = core.label_fate(X_orig, means_t, R99)
     row["n_hall_plain"] = still(X_orig)                      # sanity: GT vs the learned sampler
     tgt = torch.cdist(X_orig, means_t).argmin(1)
     mu_t = means_t[tgt]
@@ -323,7 +351,7 @@ def bench_one(cfg, d, K, device):
     cats = {"interp": is_interp, "invalid": ~is_interp}
     row["n_interp"], row["n_invalid"] = int(is_interp.sum()), int((~is_interp).sum())
     row["tube_d_med"] = float(tube_d[torch.isfinite(tube_d)].median()) if torch.isfinite(tube_d).any() else None
-    ok_lab = lambda X: gmm.label_fate(X, means_t, R99) >= 0   # corrected = lands in a core
+    ok_lab = lambda X: core.label_fate(X, means_t, R99) >= 0   # corrected = lands in a core
 
     def per_cat(fixed, tag):                                 # counts corrected in each category
         for c, m in cats.items():
@@ -334,11 +362,15 @@ def bench_one(cfg, d, K, device):
     tune = torch.randperm(n_h, generator=g, device=device)[: min(int(b.tune_n), n_h)]
 
     # ours: the whole eps grid, so the strength can be read off rather than tuned away
-    if bool(b.get("ours", True)):
+    nrm = None
+    if run_ours:
         nrm = torch.cat([pulled_normal(S, c, S.T - 1, m)[0] for c, m in zip(zh.split(Cg), mu_t.split(Cg))])
         best = None
         for e in [float(e) for e in b.eps_grid]:
-            fixed = ok_lab(G(zh - e * nrm))
+            name = f"ours_eps{e:g}"
+            end = G(zh - e * nrm, name if wants("ours") else None)
+            fates[name] = core.label_fate(end, means_t, R99)
+            fixed = fates[name] >= 0
             n_fix = per_cat(fixed, f"ours@{e:g}")
             if best is None or n_fix > best[1]:
                 best = (e, n_fix)
@@ -349,30 +381,68 @@ def bench_one(cfg, d, K, device):
     # stream, and every later choice, is the same whichever methods run.
     i0 = int(np.clip(round(float(b.iq_t0) * S.T - 1), 0, S.T - 1))
     MC = torch.randn(int(b.n_mc) // 2, d, generator=g, device=device)
-    if bool(b.get("iq", True)):
-        gradE = make_energy(S, S.F, i0, torch.cat([MC, -MC]))
-        windows = [float(w) for w in (b.get("iq_windows", None) or [b.iq_window])]
+    if run_iq:
+        gradE = iq_energy(S, i0, torch.cat([MC, -MC]))
 
         for w in windows:
-            def iq_end(lam, idx=slice(None), w=w):
-                return torch.cat([sample_iq(S, gradE, c, lam, w)[0][-1] for c in zh[idx].split(Cg)])
-            scan_l = {float(l): still(iq_end(float(l), tune)) for l in b.lam_grid}
-            lam = min(scan_l, key=lambda l: (scan_l[l], l))
-            fixed = ok_lab(iq_end(lam))
+            def iq_end(lam, idx=slice(None), w=w, name=None):
+                ends = []
+                for c in zh[idx].split(Cg):
+                    tr = sample_iq(S, gradE, c, lam, w)[0]
+                    if name is not None:
+                        tc.write(name, tr)
+                    ends.append(tr[-1])
+                return torch.cat(ends)
+            if knobs is not None and f"lam@{w:g}" in knobs:
+                lam = float(knobs[f"lam@{w:g}"])
+            else:
+                scan_l = {float(l): still(iq_end(float(l), tune)) for l in b.lam_grid}
+                lam = min(scan_l, key=lambda l: (scan_l[l], l))
+            name = f"iq_t{w:g}"
+            end = iq_end(lam, name=name if wants("iq") else None)
+            fates[name] = core.label_fate(end, means_t, R99)
+            fixed = fates[name] >= 0
             row[f"n_iq@{w:g}"] = n_h - per_cat(fixed, f"iq@{w:g}")
             row[f"lam@{w:g}"] = lam
             if len(windows) == 1:
                 row["n_iq"], row["lam"] = row[f"n_iq@{w:g}"], lam
 
     # RODS-SAS and RODS-CAS (bench.rods=false skips them)
-    for kind in (("sas", "cas") if bool(b.get("rods", True)) else ()):
-        def rods_end(rho, idx=slice(None)):
-            return sample_rods(S, zh[idx], rho, kind, float(b.rods_thresh), b.rods_window, Cg)
-        scan_r = {float(r): still(rods_end(float(r), tune)) for r in b.rho_grid}
-        rho = min(scan_r, key=lambda r: (scan_r[r], r))
-        fixed = ok_lab(rods_end(rho))
+    for kind in (("sas", "cas") if run_rods else ()):
+        def rods_end(rho, idx=slice(None), name=None):
+            rec = (lambda tr: tc.write(name, tr)) if name is not None else None
+            return sample_rods(S, zh[idx], rho, kind, float(b.rods_thresh), b.rods_window, Cg, rec)
+        if knobs is not None and f"rho_{kind}" in knobs:
+            rho = float(knobs[f"rho_{kind}"])
+        else:
+            scan_r = {float(r): still(rods_end(float(r), tune)) for r in b.rho_grid}
+            rho = min(scan_r, key=lambda r: (scan_r[r], r))
+        name = f"rods_{kind}"
+        end = rods_end(rho, name=name if wants("rods") else None)
+        fates[name] = core.label_fate(end, means_t, R99)
+        fixed = fates[name] >= 0
         row[f"n_{kind}"] = n_h - per_cat(fixed, kind)
         row[f"rho_{kind}"] = rho
+
+    if tc is not None:
+        levels = np.arange(S.T - 1, -1, -1)
+        meta = {"seed_index": torch.nonzero(hall).flatten().cpu().numpy(), "z": zh.cpu().numpy(),
+                "target_mode": tgt.cpu().numpy(), "interp": is_interp.cpu().numpy(),
+                "tube_d": tube_d.cpu().numpy(), "means": means_t.cpu().numpy(), "R99": np.float64(R99),
+                "levels": levels, "t": np.array([S.time(i) for i in levels]), "run_frac": (levels + 1) / S.T,
+                "eps_grid": np.array([float(e) for e in b.eps_grid])}
+        if nrm is not None:
+            meta["normal"] = nrm.cpu().numpy()
+        for name, f in fates.items():
+            meta[f"fate_{name}"] = f.cpu().numpy()
+        info = {"d": d, "K": K, "N": N, "n_hall": n_h, "gt": how, "checkpoint": path, "sampler": S.kind,
+                "time": "meta.npz t: the sampler's own time per row (ddim: (i+1)/T, 1 = noise; flow: "
+                        "0 = noise, 1 = data); run_frac: (i+1)/T for both",
+                "fates": "meta.npz fate_<name>: mode index of the final sample, -1 = still hallucinated",
+                "ours": "ours_eps<e> starts at z - e * normal (meta.npz z, normal)",
+                "knobs": {k: v for k, v in row.items() if k.startswith(("lam@", "rho_"))}}
+        files = tc.close(meta, info)
+        print(f"[hall_bench]   cached trajectories: {', '.join(files)}", flush=True)
 
     row["secs"] = round(time.time() - t0, 1)
     parts = []
@@ -407,7 +477,7 @@ def _save(cfg, rows):
 
 
 def run(cfg):
-    device = utils.get_device(cfg.device)
+    device = core.get_device(cfg.device)
     prev = os.path.join(bench_dir(cfg), "cells.json")
     rows = json.load(open(prev)) if os.path.exists(prev) else []   # resume a crashed run
     done = {(r["d"], r["K"]) for r in rows}
@@ -424,6 +494,34 @@ def run(cfg):
     path = _save(cfg, rows)
     print(f"[hall_bench] wrote {path}")
     return {"summary": path, "n_cells": len(rows)}
+
+
+def traj(cfg):
+    """Stage hall_bench_traj: cache the trajectories of a finished benchmark (its cells.json) for
+    bench.traj.methods. Same seeds, the lam / rho each cell chose, no tuning; cells.json is not
+    touched. Cells whose meta.json exists are skipped, so re-running resumes."""
+    device = core.get_device(cfg.device)
+    prev = os.path.join(bench_dir(cfg), "cells.json")
+    if not os.path.exists(prev):
+        raise FileNotFoundError(f"{prev}: run stage hall_bench first (same run_id / data.weighted)")
+    cells = {(r["d"], r["K"]): r for r in json.load(open(prev))}
+    for d in cfg.bench.d:
+        for K in cfg.bench.K:
+            r = cells.get((int(d), int(K)))
+            if r is None or r.get("skipped") or not r.get("n_hall"):
+                continue
+            if os.path.exists(os.path.join(traj_dir(cfg, int(d), int(K)), "meta.json")):
+                print(f"[hall_bench_traj] d={d} K={K}: already cached, skipped")
+                continue
+            new = bench_one(cfg, int(d), int(K), device, knobs=r, save=True)
+            if new is None:
+                continue
+            diff = {k: (r[k], new[k]) for k in new if "|" in k and k in r and r[k] != new[k]}
+            if new.get("n_hall") != r.get("n_hall"):
+                diff["n_hall"] = (r.get("n_hall"), new.get("n_hall"))
+            print(f"[hall_bench_traj] d={d} K={K}: " + ("counts match cells.json" if not diff else
+                  f"differs from cells.json (old, new): {diff}"), flush=True)
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
 
 # ------------------------------------------------------------------ table (stage hall_bench_viz)
@@ -528,7 +626,7 @@ def viz(cfg):
         print("[hall_bench_viz] nothing to draw")
         return {}
     rows.sort(key=lambda r: (r["d"], r["K"]))
-    out = os.path.join(viz_root(cfg), cfg.run_tag, cfg.process, "hall_bench")
+    out = fig_dir(cfg)
     os.makedirs(out, exist_ok=True)
     iqk = sorted({k for r in rows for k in r if k.startswith("n_iq@")}, key=lambda k: -float(k[5:]))
     cand = ([("n_ours", "Ours")] + [(k, f"IQ t<={k[5:]}") for k in iqk]
@@ -618,18 +716,17 @@ def viz(cfg):
 # ==================================================================================== #
 #  stage: hall_bench_anim — replay benchmark seeds with every step recorded (d = 2)     #
 # ==================================================================================== #
-"""Reads the finished benchmark (output/<run_tag>/<process>/hall_bench/cells.json), rebuilds
+"""Reads the finished benchmark (output/<run_id>/ddim/<variant>/hall_bench/cells.json), rebuilds
 each cell's hallucinated seeds (cells with d in bench.anim_d, default [2]) exactly as the benchmark did (same ground truth, same RNG
 stream), takes the first bench.anim_n of EACH class (mode interpolation / invalid; no cherry-picking),
 and re-runs every method
 with the settings the benchmark chose (eps, lam per IQ window, rho), recording full paths.
 d = 2 is drawn directly; d > 2 in the (a, r) plane of each seed's two modes, where distances to
 both centres are exact. Writes one animation (gif, + mp4 with ffmpeg) and one still per seed to
-visualization/<run_tag>/<process>/hall_bench/.
+output/<run_id>/ddim/<variant>/hall_bench/figures/. Use the benchmark's run_id and data.weighted.
 
-    python code/ddim/main.py 'stages=[hall_bench_anim]' run_tag=<benchmark run_tag> +bench.variant=...
+    python code/baselines/main.py 'stages=[hall_bench_anim]' run_id=<benchmark run_id>
 """
-from common.stages.pullback_iq import C_OG, C_IQ, C_US
 
 
 def sample_rods_traj(S, z, rho, kind, thresh, window):
@@ -651,12 +748,12 @@ def sample_rods_traj(S, z, rho, kind, thresh, window):
                 on = torch.ones(x.shape[0], dtype=torch.bool, device=x.device)
             with torch.no_grad():
                 if kind == "sas":
-                    s_ = score(S, x, i)
+                    s_ = S.score(x, i)
                     delta = -rho * s_ / s_.norm(dim=1, keepdim=True).clamp_min(1e-12)
                 else:
                     delta = rho * u
-                e = torch.where(on[:, None], S.F.eps(x + delta, i), S.F.eps(x, i))
-                x = S.p._ddim_step(x, i, e)
+                e = torch.where(on[:, None], S.pred(x + delta, i), S.pred(x, i))
+                x = S.update(x, i, e)
         xs.append(x.detach())
     return torch.stack(xs)
 
@@ -842,23 +939,21 @@ def _anim_meridian(paths_x0, paths_x, t, mu1, mu2, R99, eps, title, path, fps=25
 
 def anim(cfg):
     b = cfg.bench
-    device = utils.get_device(cfg.device)
+    device = core.get_device(cfg.device)
     cells = json.load(open(os.path.join(bench_dir(cfg), "cells.json")))
-    out = os.path.join(viz_root(cfg), cfg.run_tag, cfg.process, "hall_bench")
+    out = fig_dir(cfg)
     os.makedirs(out, exist_ok=True)
     made = []
     want = [int(x) for x in (b.get("anim_d", None) or [2])]
     for r in [r for r in cells if int(r["d"]) in want]:
         d, K = int(r["d"]), int(r["K"])
-        path = _ckpt_path(cfg, d, K)
-        model, ck = checkpoint.load(path, device)
-        for prm in model.parameters():
-            prm.requires_grad_(False)
-        means_t, R99 = ck["means"], float(ck["R99"])
-        proc = make_process(str(b.ckpt_process or cfg.process), means_t, ck["variance"], ck["T"], device, cfg)
-        use_ckpt_schedule(proc, ck)
-        S = Sampler(proc, Field(proc, model, "learned"))
-        S_true = Sampler(proc, Field(proc, model, "true"))
+        got = load_cell(cfg, b, d, K, device, need_ddim=False)
+        if got is None:
+            print(f"[hall_bench_anim] d={d} K={K}: checkpoint missing, skipped")
+            continue
+        model, ck, proc, means_t, R99, path = got
+        S = make_sampler(proc, model, "learned")
+        S_true = make_sampler(proc, model, "true")
         Z, L, how = ground_truth(cfg, d, K, S, S_true, means_t, R99, device, proc)
         zh_all = Z[L < 0]
         if zh_all.shape[0] != int(r["n_hall"]):
@@ -891,7 +986,7 @@ def anim(cfg):
         if "n_ours" in r:
             paths["ours"] = S.traj(z_ours)
         i0 = int(np.clip(round(float(b.iq_t0) * S.T - 1), 0, S.T - 1))
-        gradE = make_energy(S, S.F, i0, torch.cat([MC, -MC]))
+        gradE = iq_energy(S, i0, torch.cat([MC, -MC]))
         for k in sorted([k for k in r if k.startswith("n_iq@")], key=lambda k: -float(k[5:])):
             w = k[5:]
             paths[f"IQ t<={w}"] = sample_iq(S, gradE, zh, float(r[f"lam@{w}"]), float(w))[0]
@@ -902,7 +997,7 @@ def anim(cfg):
         t = np.array([S.t_of(level(k, S.T)) for k in range(S.T)])
         cpu = lambda x: x.detach().cpu().numpy()
         MU = cpu(means_t)
-        frames = int(cfg.pullback.get("anim_frames", 120))
+        frames = int(b.get("anim_frames", None) or cfg.pullback.get("anim_frames", 120))
         if d > 2:                                           # predicted clean samples along each path
             with torch.no_grad():
                 paths_x0 = {k: torch.stack([S.tweedie(v[kk], level(kk, S.T)) for kk in range(S.T)])
