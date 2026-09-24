@@ -4,7 +4,7 @@
 # array range are passed on the sbatch command line by submit.sh.
 
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --mem=8G                        # measured peak RSS ~2.7 GB (d=1024, 3 seeds); more blocks packing
 #SBATCH --exclude=euler16               # 2x RTX 2080 Ti (11 GB): too small for the big eval cells
 #SBATCH --output=slurm/%x_%A_%a.out
 #SBATCH --error=slurm/%x_%A_%a.err

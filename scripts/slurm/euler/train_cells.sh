@@ -36,6 +36,6 @@ submit() {  # <name> <tasks> <time> <mem>
     --array=0-$((n - 1)) --export=ALL,TASKS="$2" scripts/slurm/euler/task.sbatch)  ($n tasks, limit $3)"
 }
 echo "run_id : $RUN_ID   (task lists in $TDIR/)"
-submit atlas-train-big   "$TDIR/train_big.txt"   "$BIG_TIME"   64G
-submit atlas-train-small "$TDIR/train_small.txt" "$SMALL_TIME" 32G
+submit atlas-train-big   "$TDIR/train_big.txt"   "$BIG_TIME"   8G
+submit atlas-train-small "$TDIR/train_small.txt" "$SMALL_TIME" 8G
 echo "watch  : squeue -u \$USER"

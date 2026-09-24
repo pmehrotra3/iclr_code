@@ -28,9 +28,7 @@
       "max_attempts": 2
     },
     "eval": {
-      "n_eval_per_mode": 50000,
-      "n_eval": null,
-      "eval_per_anchor": null
+      "n_eval_per_mode": 50000
     },
     "anchors": {
       "seed": 0,
@@ -46,6 +44,13 @@
     }
   },
   "process": {
+    "flow": {
+      "T_train": 500,
+      "name": "flow",
+      "sigma_min": 0.0001,
+      "solver": "euler",
+      "true_solver": "heun"
+    },
     "ddim": {
       "T_train": 500,
       "name": "ddim",
@@ -57,7 +62,6 @@
   "predictors": {
     "knn": {
       "hidden": 256,
-      "depth": 4,
       "degree": 3,
       "epochs": 30,
       "batch": 2048,
@@ -66,7 +70,6 @@
       "min_steps": 3000,
       "ensemble": 3,
       "k": 10,
-      "bandwidth": 1.0,
       "temperature": 0.1,
       "threshold": "auto",
       "confidence": "entropy",
@@ -75,7 +78,6 @@
     },
     "altered_knn": {
       "hidden": 256,
-      "depth": 4,
       "degree": 3,
       "epochs": 30,
       "batch": 2048,
@@ -84,7 +86,6 @@
       "min_steps": 3000,
       "ensemble": 3,
       "k": 10,
-      "bandwidth": 1.0,
       "temperature": 0.1,
       "threshold": "auto",
       "confidence": "entropy",
@@ -93,7 +94,6 @@
     },
     "quadratic": {
       "hidden": 256,
-      "depth": 4,
       "degree": 3,
       "epochs": 30,
       "batch": 2048,
@@ -102,7 +102,6 @@
       "min_steps": 3000,
       "ensemble": 3,
       "k": 10,
-      "bandwidth": 1.0,
       "temperature": 0.1,
       "threshold": "auto",
       "confidence": "entropy",
@@ -111,7 +110,6 @@
     },
     "polar3": {
       "hidden": 256,
-      "depth": 4,
       "degree": 3,
       "epochs": 30,
       "batch": 2048,
@@ -120,7 +118,6 @@
       "min_steps": 3000,
       "ensemble": 3,
       "k": 10,
-      "bandwidth": 1.0,
       "temperature": 0.1,
       "threshold": "auto",
       "confidence": "entropy",
@@ -128,6 +125,6 @@
       "arch": "polar"
     }
   },
-  "created": "2026-09-23 18:09:25",
-  "updated": "2026-09-23 19:36:10"
+  "created": "2026-09-24 13:39:39",
+  "updated": "2026-09-24 13:40:21"
 }
