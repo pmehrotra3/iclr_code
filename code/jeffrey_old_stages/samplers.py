@@ -104,9 +104,15 @@ class FlowSampler(DDIMSampler):
         self.oms = 1.0 - float(proc.sigma_min)
         self.dt = 1.0 / (self.T - 1)
         self.solver = str(proc.solver) if field == "learned" else str(proc.true_solver)
+        # The time of every level, read off the process's grid ONCE as Python floats (the same
+        # float32 values). proc.ts lives on the GPU, and float(proc.ts[k]) inside the loop forced
+        # a GPU -> CPU sync at every network call: 1 per step for the plain sampler and ours,
+        # up to 6 for IQ and RODS, where DDIM has none.
+        ts = proc.ts.tolist()
+        self._tl = ts[::-1]                                  # level i -> t = ts[T-1-i]
 
     def _t(self, i):
-        return float(self.p.ts[self.T - 1 - int(i)])
+        return self._tl[int(i)]
 
     def _v(self, x, t):
         """Velocity at time t (the evaluation FlowOTProcess.sample makes)."""
