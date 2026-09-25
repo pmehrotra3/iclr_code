@@ -22,6 +22,7 @@ import core
 
 class Process(ABC):
     name = "base"
+    ckpt_process = None      # another process whose checkpoints this one samples (never trained)
 
     def __init__(self, means_t, variance, T, device, cfg, weights=None):
         self.means_t, self.variance, self.T = means_t, variance, T    # (K, d), sigma^2, steps

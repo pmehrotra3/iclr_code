@@ -1,0 +1,8 @@
+# process/dpmpp2m - the trained DDIM network sampled with DPM-Solver++(2M) (1 network call per step);
+# reuses checkpoints/ddim and every DDIM setting (code/processes/dpmpp2m.py), never trained
+
+defaults:
+  - ddim
+  - _self_
+
+name: dpmpp2m

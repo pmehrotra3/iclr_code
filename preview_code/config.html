@@ -120,6 +120,35 @@ sampler's solver (Euler) and the exact field's (Heun).</p></div><div class="code
 <span class="linenos"> 9</span><span class="nt">solver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">euler</span><span class="w">      </span><span class="c1"># learned-sampler ODE solver: euler | midpoint | heun | rk4</span>
 <span class="linenos">10</span><span class="nt">true_solver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">heun</span><span class="w">  </span><span class="c1"># exact-velocity backtrack solver: heun recommended</span>
 </code></pre></div>
+</div></section></section><section class="file" id="file-conf-process-heun-yaml"><div class="filehead"><h2><code>conf/process/heun.yaml</code></h2><span class="meta">8 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>Heun on the DDIM network<span class="lines">lines 1–8</span></h3><p>Everything from <code>ddim.yaml</code> (its <code>defaults</code> list pulls it in);
+only the name changes. <code>rk45.yaml</code> and <code>dpmpp2m.yaml</code> are the same with their
+own names. See <a href="processes.html#file-code-processes-heun-py">heun.py</a> and its base <a href="processes.html#file-code-processes-pf-ode-py">pf_ode.py</a>.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span><span class="c1"># process/heun - the trained DDIM network sampled with Heun&#39;s method (2 network calls per step);</span>
+<span class="linenos">2</span><span class="c1"># reuses checkpoints/ddim and every DDIM setting (code/processes/heun.py), never trained</span>
+<span class="linenos">3</span>
+<span class="linenos">4</span><span class="nt">defaults</span><span class="p">:</span>
+<span class="linenos">5</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ddim</span>
+<span class="linenos">6</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">_self_</span>
+<span class="linenos">7</span>
+<span class="linenos">8</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">heun</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-process-rk45-yaml"><div class="filehead"><h2><code>conf/process/rk45.yaml</code></h2><span class="meta">8 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>RK45 on the DDIM network<span class="lines">lines 1–8</span></h3><p>As heun.yaml, with the Dormand–Prince solver.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span><span class="c1"># process/rk45 - the trained DDIM network sampled with fixed-step Dormand-Prince RK45 (6 network calls per step);</span>
+<span class="linenos">2</span><span class="c1"># reuses checkpoints/ddim and every DDIM setting (code/processes/rk45.py), never trained</span>
+<span class="linenos">3</span>
+<span class="linenos">4</span><span class="nt">defaults</span><span class="p">:</span>
+<span class="linenos">5</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ddim</span>
+<span class="linenos">6</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">_self_</span>
+<span class="linenos">7</span>
+<span class="linenos">8</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rk45</span>
+</code></pre></div>
+</div></section></section><section class="file" id="file-conf-process-dpmpp2m-yaml"><div class="filehead"><h2><code>conf/process/dpmpp2m.yaml</code></h2><span class="meta">8 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>DPM-Solver++(2M) on the DDIM network<span class="lines">lines 1–8</span></h3><p>As heun.yaml, with DPM-Solver++(2M).</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span><span class="c1"># process/dpmpp2m - the trained DDIM network sampled with DPM-Solver++(2M) (1 network call per step);</span>
+<span class="linenos">2</span><span class="c1"># reuses checkpoints/ddim and every DDIM setting (code/processes/dpmpp2m.py), never trained</span>
+<span class="linenos">3</span>
+<span class="linenos">4</span><span class="nt">defaults</span><span class="p">:</span>
+<span class="linenos">5</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ddim</span>
+<span class="linenos">6</span><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">_self_</span>
+<span class="linenos">7</span>
+<span class="linenos">8</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dpmpp2m</span>
+</code></pre></div>
 </div></section></section><section class="file" id="file-conf-data-base-yaml"><div class="filehead"><h2><code>conf/data/base.yaml</code></h2><span class="meta">8 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>The data, shared part<span class="lines">lines 1–8</span></h3><p><code>mass_q</code> = 0.99 is where "99%" in R99 comes from: change it and the line
 between a mode and a hallucination moves. <code>weighted</code> chooses the variant.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span><span class="c1"># data/base - settings shared by every dataset</span>
 <span class="linenos">2</span>
@@ -162,7 +191,7 @@ the CUDA-graph switches, and the hallucination target with its retries.</p></div
 <span class="linenos"> 8</span><span class="nt">ema_decay</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.999</span><span class="w">      </span><span class="c1"># weight EMA decay (null = off)</span>
 <span class="linenos"> 9</span><span class="nt">ema_warmup</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span><span class="w">      </span><span class="c1"># steps to ramp EMA decay up to ema_decay</span>
 <span class="linenos">10</span><span class="nt">batch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">512</span><span class="w">            </span><span class="c1"># minibatch size</span>
-<span class="linenos">11</span><span class="nt">small_max_d</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">64</span><span class="w">       </span><span class="c1"># model size: 'small' for d &lt;= 64, 'large' for d = 128 .. 512</span>
+<span class="linenos">11</span><span class="nt">small_max_d</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">64</span><span class="w">       </span><span class="c1"># model size: &#39;small&#39; for d &lt;= 64, &#39;large&#39; for d = 128 .. 512</span>
 <span class="linenos">12</span><span class="nt">width</span><span class="p">:</span><span class="w">                </span><span class="c1"># ScoreNet hidden width per size</span>
 <span class="linenos">13</span><span class="w">  </span><span class="nt">small</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">256</span><span class="w">          </span><span class="c1">#   (the existing d &lt;= 64 checkpoints)</span>
 <span class="linenos">14</span><span class="w">  </span><span class="nt">large</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1024</span><span class="w">         </span><span class="c1">#   one net shared by d = 128, 256, 512</span>
@@ -182,7 +211,7 @@ the CUDA-graph switches, and the hallucination target with its retries.</p></div
 <span class="linenos">3</span><span class="c1"># ground-truth seeds pushed through the learned sampler = n_eval_per_mode * K, so the per-mode</span>
 <span class="linenos">4</span><span class="c1"># count stays constant as K grows (K=2 -&gt; 100k, K=16 -&gt; 800k)</span>
 <span class="linenos">5</span><span class="nt">n_eval_per_mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50000</span>
-<span class="linenos">6</span><span class="nt">part</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">           </span><span class="c1"># true: only write this job's cell files, do not rebuild results.json</span>
+<span class="linenos">6</span><span class="nt">part</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">           </span><span class="c1"># true: only write this job&#39;s cell files, do not rebuild results.json</span>
 <span class="linenos">7</span><span class="w">                      </span><span class="c1"># (scripts/main.sh runs evaluate per d, then stages=[merge,visualize])</span>
 <span class="linenos">8</span><span class="nt">force</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">          </span><span class="c1"># true: recompute the requested (budget, predictor) rows even if the cell</span>
 <span class="linenos">9</span><span class="w">                      </span><span class="c1"># file already holds them</span>
@@ -209,7 +238,7 @@ wide); 5 000 calibration seeds for altered_knn.</p></div><div class="code"><div 
 <span class="linenos">11</span><span class="w">  </span><span class="nt">w_min</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.2</span><span class="w">      </span><span class="c1"># minimum ring weight</span>
 </code></pre></div>
 </div></section></section><section class="file" id="file-conf-classifier-base-yaml"><div class="filehead"><h2><code>conf/classifier/base.yaml</code></h2><span class="meta">16 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>Predictor defaults<span class="lines">lines 1–16</span></h3><p>Every predictor starts from these values (<code>_shared</code>); its own file only
-lists what differs. Some only matter to one kind of predictor, as the comments say.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos"> 1</span><span class="c1"># classifier/base - hyper-parameters shared by every predictor (_shared); a predictor's own</span>
+lists what differs. Some only matter to one kind of predictor, as the comments say.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos"> 1</span><span class="c1"># classifier/base - hyper-parameters shared by every predictor (_shared); a predictor&#39;s own</span>
 <span class="linenos"> 2</span><span class="c1"># file (knn.yaml, polar3.yaml, ...) overrides them</span>
 <span class="linenos"> 3</span>
 <span class="linenos"> 4</span><span class="nt">_shared</span><span class="p">:</span>
@@ -247,7 +276,7 @@ lists what differs. Some only matter to one kind of predictor, as the comments s
 <span class="linenos">4</span><span class="nt">arch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">polar</span><span class="w">   </span><span class="c1"># implementation: polar polynomial boundary</span>
 <span class="linenos">5</span><span class="nt">degree</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">     </span><span class="c1"># polynomial degree</span>
 </code></pre></div>
-</div></section></section><section class="file" id="file-readme-md"><div class="filehead"><h2><code>README.md</code></h2><span class="meta">100 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>The repository&#x27;s own README<span class="lines">lines 1–100</span></h3><p>Setup, how to run, the output layout and the method notes, as the author wrote them.
+</div></section></section><section class="file" id="file-readme-md"><div class="filehead"><h2><code>README.md</code></h2><span class="meta">114 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>The repository&#x27;s own README<span class="lines">lines 1–114</span></h3><p>Setup, how to run, the output layout and the method notes, as the author wrote them.
 The README's explanation of why 150 steps hallucinate ("small discretisation error") is plausible.
 For DDIM, part of the effect may also be the schedule issue described at
 <a href="core.html#make_schedule">make_schedule</a>.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">  1</span><span class="gh"># Seed-fate atlas</span>
@@ -256,9 +285,9 @@ For DDIM, part of the effect may also be the schedule issue described at
 <span class="linenos">  4</span>
 <span class="linenos">  5</span>Data is a Gaussian mixture of K modes on a sphere in d dimensions. A seed x ~ N(0, I) has a
 <span class="linenos">  6</span><span class="gs">**fate**</span>: the mode whose 99%-mass ball (radius R99) its sample lands in, or <span class="ge">*hallucination*</span> if it
-<span class="linenos">  7</span>lands in none. Because the mixture's exact score is known in closed form, we can plant labelled
+<span class="linenos">  7</span>lands in none. Because the mixture&#39;s exact score is known in closed form, we can plant labelled
 <span class="linenos">  8</span>points around the modes, carry them back to seed space with the exact field, and fit
-<span class="linenos">  9</span>predictors of a seed's fate from them (the <span class="ge">*atlas*</span>). Each predictor is scored against the
+<span class="linenos">  9</span>predictors of a seed&#39;s fate from them (the <span class="ge">*atlas*</span>). Each predictor is scored against the
 <span class="linenos"> 10</span>fates the <span class="gs">**learned**</span> sampler actually produces.
 <span class="linenos"> 11</span>
 <span class="linenos"> 12</span><span class="gu">## Layout</span>
@@ -271,85 +300,99 @@ For DDIM, part of the effect may also be the schedule issue described at
 <span class="linenos"> 19</span><span class="sb">  visualize.py     stage 3: results.json -&gt; (d, K) heatmaps and a LaTeX/PNG table</span>
 <span class="linenos"> 20</span><span class="sb">  core.py          numerics: GMM, score network, training recipe, exact sampler, anchors</span>
 <span class="linenos"> 21</span><span class="sb">  fate.py          the fate predictors (knn, altered_knn, quadratic, polar) and metrics</span>
-<span class="linenos"> 22</span><span class="sb">  processes/       ddim.py (VP diffusion, DDIM), flow.py (flow matching, OT path)</span>
-<span class="linenos"> 23</span><span class="sb">  runstate.py      named runs: settings check, invocation log</span>
-<span class="linenos"> 24</span><span class="sb">  combine.py       merge a run built on another machine into this one</span>
-<span class="linenos"> 25</span><span class="sb">  rank_probe.py    standalone: is the hallucination set low-rank?</span>
-<span class="linenos"> 26</span><span class="sb">  unit_tests/      python code/unit_tests/run.py</span>
-<span class="linenos"> 27</span><span class="sb">conf/              Hydra configs: config.yaml + one folder per group</span>
-<span class="linenos"> 28</span><span class="sb">scripts/main.sh    the full sweep, fanned out over all GPUs  (scripts/slurm/: the same on SLURM)</span>
-<span class="linenos"> 29</span><span class="sb">output/&lt;run_id&gt;/   everything a run produces (below)</span>
-<span class="linenos"> 30</span><span class="sb">```</span>
-<span class="linenos"> 31</span>
-<span class="linenos"> 32</span><span class="gu">## Setup</span>
-<span class="linenos"> 33</span>
-<span class="linenos"> 34</span><span class="sb">```bash</span>
-<span class="linenos"> 35</span>python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>venv<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">source</span><span class="w"> </span>venv/bin/activate
-<span class="linenos"> 36</span>pip<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>requirements.txt<span class="w">     </span><span class="c1"># tested: python 3.12, torch 2.5.1+cu121</span>
-<span class="linenos"> 37</span><span class="sb">```</span>
-<span class="linenos"> 38</span>
-<span class="linenos"> 39</span><span class="gu">## Run</span>
-<span class="linenos"> 40</span>
-<span class="linenos"> 41</span><span class="sb">```bash</span>
-<span class="linenos"> 42</span>python<span class="w"> </span>code/main.py<span class="w">                                   </span><span class="c1"># the sweep in conf/sweep/base.yaml</span>
-<span class="linenos"> 43</span>python<span class="w"> </span>code/main.py<span class="w"> </span>sweep.d<span class="o">=[</span><span class="m">16</span>,64<span class="o">]</span><span class="w"> </span>sweep.K<span class="o">=[</span><span class="m">4</span>,8<span class="o">]</span><span class="w">     </span><span class="c1"># another grid</span>
-<span class="linenos"> 44</span>python<span class="w"> </span>code/main.py<span class="w"> </span><span class="nv">process</span><span class="o">=</span>flow<span class="w">                      </span><span class="c1"># flow matching instead of DDIM</span>
-<span class="linenos"> 45</span>python<span class="w"> </span>code/main.py<span class="w"> </span><span class="nv">stages</span><span class="o">=[</span>visualize<span class="o">]</span><span class="w">                </span><span class="c1"># re-plot only</span>
-<span class="linenos"> 46</span>./scripts/main.sh<span class="w">                                     </span><span class="c1"># the full grid on every GPU</span>
-<span class="linenos"> 47</span><span class="nv">DIMS</span><span class="o">=</span><span class="s2">"512"</span><span class="w"> </span><span class="nv">KS</span><span class="o">=</span><span class="s2">"2 4 8 16"</span><span class="w"> </span><span class="nv">PROCESSES</span><span class="o">=</span>ddim<span class="w"> </span>./scripts/main.sh
-<span class="linenos"> 48</span><span class="sb">```</span>
-<span class="linenos"> 49</span>
-<span class="linenos"> 50</span>Every setting is a Hydra override (<span class="sb">`conf/`</span> holds the defaults). Predictors to run are the
-<span class="linenos"> 51</span><span class="sb">`classifier@classifier.models.*`</span> lines of <span class="sb">`conf/config.yaml`</span>.
-<span class="linenos"> 52</span>
-<span class="linenos"> 53</span><span class="gu">## Runs are named and additive</span>
+<span class="linenos"> 22</span><span class="sb">  processes/       ddim.py (VP diffusion, DDIM), flow.py (flow matching, OT path),</span>
+<span class="linenos"> 23</span><span class="sb">                   heun.py / rk45.py / dpmpp2m.py (the DDIM network, other solvers; shared base pf_ode.py)</span>
+<span class="linenos"> 24</span><span class="sb">  runstate.py      named runs: settings check, invocation log</span>
+<span class="linenos"> 25</span><span class="sb">  combine.py       merge a run built on another machine into this one</span>
+<span class="linenos"> 26</span><span class="sb">  rank_probe.py    standalone: is the hallucination set low-rank?</span>
+<span class="linenos"> 27</span><span class="sb">  unit_tests/      python code/unit_tests/run.py</span>
+<span class="linenos"> 28</span><span class="sb">conf/              Hydra configs: config.yaml + one folder per group</span>
+<span class="linenos"> 29</span><span class="sb">scripts/main.sh    the full sweep, fanned out over all GPUs  (scripts/slurm/: the same on SLURM)</span>
+<span class="linenos"> 30</span><span class="sb">output/&lt;run_id&gt;/   everything a run produces (below)</span>
+<span class="linenos"> 31</span><span class="sb">```</span>
+<span class="linenos"> 32</span>
+<span class="linenos"> 33</span><span class="gu">## Setup</span>
+<span class="linenos"> 34</span>
+<span class="linenos"> 35</span><span class="sb">```bash</span>
+<span class="linenos"> 36</span>python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>venv<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">source</span><span class="w"> </span>venv/bin/activate
+<span class="linenos"> 37</span>pip<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>requirements.txt<span class="w">     </span><span class="c1"># tested: python 3.12, torch 2.5.1+cu121</span>
+<span class="linenos"> 38</span><span class="sb">```</span>
+<span class="linenos"> 39</span>
+<span class="linenos"> 40</span><span class="gu">## Run</span>
+<span class="linenos"> 41</span>
+<span class="linenos"> 42</span><span class="sb">```bash</span>
+<span class="linenos"> 43</span>python<span class="w"> </span>code/main.py<span class="w">                                   </span><span class="c1"># the sweep in conf/sweep/base.yaml</span>
+<span class="linenos"> 44</span>python<span class="w"> </span>code/main.py<span class="w"> </span>sweep.d<span class="o">=[</span><span class="m">16</span>,64<span class="o">]</span><span class="w"> </span>sweep.K<span class="o">=[</span><span class="m">4</span>,8<span class="o">]</span><span class="w">     </span><span class="c1"># another grid</span>
+<span class="linenos"> 45</span>python<span class="w"> </span>code/main.py<span class="w"> </span><span class="nv">process</span><span class="o">=</span>flow<span class="w">                      </span><span class="c1"># flow matching instead of DDIM</span>
+<span class="linenos"> 46</span>python<span class="w"> </span>code/main.py<span class="w"> </span><span class="nv">process</span><span class="o">=</span>heun<span class="w"> </span><span class="nv">stages</span><span class="o">=[</span>evaluate<span class="o">]</span><span class="w">    </span><span class="c1"># the DDIM models, Heun solver (also rk45, dpmpp2m)</span>
+<span class="linenos"> 47</span>python<span class="w"> </span>code/main.py<span class="w"> </span><span class="nv">stages</span><span class="o">=[</span>visualize<span class="o">]</span><span class="w">                </span><span class="c1"># re-plot only</span>
+<span class="linenos"> 48</span>./scripts/main.sh<span class="w">                                     </span><span class="c1"># the full grid on every GPU</span>
+<span class="linenos"> 49</span><span class="nv">DIMS</span><span class="o">=</span><span class="s2">&quot;512&quot;</span><span class="w"> </span><span class="nv">KS</span><span class="o">=</span><span class="s2">&quot;2 4 8 16&quot;</span><span class="w"> </span><span class="nv">PROCESSES</span><span class="o">=</span>ddim<span class="w"> </span>./scripts/main.sh
+<span class="linenos"> 50</span><span class="sb">```</span>
+<span class="linenos"> 51</span>
+<span class="linenos"> 52</span>Every setting is a Hydra override (<span class="sb">`conf/`</span> holds the defaults). Predictors to run are the
+<span class="linenos"> 53</span><span class="sb">`classifier@classifier.models.*`</span> lines of <span class="sb">`conf/config.yaml`</span>.
 <span class="linenos"> 54</span>
-<span class="linenos"> 55</span>A run is a <span class="gs">**name**</span> (<span class="sb">`run_id`</span>, default <span class="sb">`abc123`</span>); everything lives in <span class="sb">`output/&lt;run_id&gt;/`</span>:
+<span class="linenos"> 55</span><span class="gu">## Runs are named and additive</span>
 <span class="linenos"> 56</span>
-<span class="linenos"> 57</span><span class="sb">```</span>
-<span class="linenos"> 58</span><span class="sb">run.json, history.log, invocations/        settings, one line / one config per invocation</span>
-<span class="linenos"> 59</span><span class="sb">checkpoints/&lt;process&gt;/&lt;variant&gt;/           checkpoints/model_d&lt;d&gt;_K&lt;K&gt;_s&lt;seed&gt;.pt, gt_cache/, manifest.json</span>
-<span class="linenos"> 60</span><span class="sb">&lt;process&gt;/&lt;variant&gt;/T&lt;T_true&gt;/             cells/d&lt;d&gt;_K&lt;K&gt;_s&lt;seed&gt;.json   (the result rows)</span>
-<span class="linenos"> 61</span><span class="sb">                                           results.json, results.csv, results_per_seed.csv</span>
-<span class="linenos"> 62</span><span class="sb">                                           table.tex, table.png, &lt;model&gt;.png, anchors_&lt;b&gt;/</span>
-<span class="linenos"> 63</span><span class="sb">logs/                                      scripts/main.sh job logs</span>
-<span class="linenos"> 64</span><span class="sb">```</span>
-<span class="linenos"> 65</span>
-<span class="linenos"> 66</span><span class="sb">`&lt;variant&gt;`</span> is <span class="sb">`unweighted`</span> or <span class="sb">`weighted`</span> (<span class="sb">`data.weighted`</span>: random mixing weights). Every stage
-<span class="linenos"> 67</span>skips what already exists, so re-running a run resumes it and a sweep split into pieces (other
-<span class="linenos"> 68</span>d, more seeds, another anchor budget, another T_true or predictor) gives the files of one big
-<span class="linenos"> 69</span>invocation. The first invocation records the settings in <span class="sb">`run.json`</span>; a later one that changes
-<span class="linenos"> 70</span>how cells are computed (training recipe, eval size, a predictor's hyper-parameters, ...) is
-<span class="linenos"> 71</span>refused (<span class="sb">`strict_run=false`</span> overrides). Use a new <span class="sb">`run_id`</span> for a new experiment.
-<span class="linenos"> 72</span>
-<span class="linenos"> 73</span><span class="gs">**Several machines.**</span> Run the same <span class="sb">`run_id`</span> elsewhere (e.g. <span class="sb">`DIMS="512"`</span>), copy that machine's
-<span class="linenos"> 74</span><span class="sb">`output/&lt;run_id&gt;/`</span> back, then
-<span class="linenos"> 75</span>
-<span class="linenos"> 76</span><span class="sb">```bash</span>
-<span class="linenos"> 77</span>python<span class="w"> </span>code/combine.py<span class="w"> </span>/path/to/copied/abc123<span class="w"> </span>--dry-run<span class="w">    </span><span class="c1"># report first</span>
-<span class="linenos"> 78</span>python<span class="w"> </span>code/combine.py<span class="w"> </span>/path/to/copied/abc123<span class="w">              </span><span class="c1"># merge + rebuild results and figures</span>
-<span class="linenos"> 79</span><span class="sb">```</span>
-<span class="linenos"> 80</span>
-<span class="linenos"> 81</span>It checks the settings match, copies what is missing, merges cell rows and manifests, and
-<span class="linenos"> 82</span>never mixes a model with results computed from a different model of the same cell.
-<span class="linenos"> 83</span>
-<span class="linenos"> 84</span><span class="gu">## Method notes</span>
+<span class="linenos"> 57</span>A run is a <span class="gs">**name**</span> (<span class="sb">`run_id`</span>, default <span class="sb">`abc123`</span>); everything lives in <span class="sb">`output/&lt;run_id&gt;/`</span>:
+<span class="linenos"> 58</span>
+<span class="linenos"> 59</span><span class="sb">```</span>
+<span class="linenos"> 60</span><span class="sb">run.json, history.log, invocations/        settings, one line / one config per invocation</span>
+<span class="linenos"> 61</span><span class="sb">checkpoints/&lt;process&gt;/&lt;variant&gt;/           checkpoints/model_d&lt;d&gt;_K&lt;K&gt;_s&lt;seed&gt;.pt, gt_cache/, manifest.json</span>
+<span class="linenos"> 62</span><span class="sb">&lt;process&gt;/&lt;variant&gt;/T&lt;T_true&gt;/             cells/d&lt;d&gt;_K&lt;K&gt;_s&lt;seed&gt;.json   (the result rows)</span>
+<span class="linenos"> 63</span><span class="sb">                                           results.json, results.csv, results_per_seed.csv</span>
+<span class="linenos"> 64</span><span class="sb">                                           table.tex, table.png, &lt;model&gt;.png, anchors_&lt;b&gt;/</span>
+<span class="linenos"> 65</span><span class="sb">logs/                                      scripts/main.sh job logs</span>
+<span class="linenos"> 66</span><span class="sb">```</span>
+<span class="linenos"> 67</span>
+<span class="linenos"> 68</span><span class="sb">`&lt;variant&gt;`</span> is <span class="sb">`unweighted`</span> or <span class="sb">`weighted`</span> (<span class="sb">`data.weighted`</span>: random mixing weights). Every stage
+<span class="linenos"> 69</span>skips what already exists, so re-running a run resumes it and a sweep split into pieces (other
+<span class="linenos"> 70</span>d, more seeds, another anchor budget, another T_true or predictor) gives the files of one big
+<span class="linenos"> 71</span>invocation. The first invocation records the settings in <span class="sb">`run.json`</span>; a later one that changes
+<span class="linenos"> 72</span>how cells are computed (training recipe, eval size, a predictor&#39;s hyper-parameters, ...) is
+<span class="linenos"> 73</span>refused (<span class="sb">`strict_run=false`</span> overrides). Use a new <span class="sb">`run_id`</span> for a new experiment.
+<span class="linenos"> 74</span>
+<span class="linenos"> 75</span><span class="gs">**Several machines.**</span> Run the same <span class="sb">`run_id`</span> elsewhere (e.g. <span class="sb">`DIMS=&quot;512&quot;`</span>), copy that machine&#39;s
+<span class="linenos"> 76</span><span class="sb">`output/&lt;run_id&gt;/`</span> back, then
+<span class="linenos"> 77</span>
+<span class="linenos"> 78</span><span class="sb">```bash</span>
+<span class="linenos"> 79</span>python<span class="w"> </span>code/combine.py<span class="w"> </span>/path/to/copied/abc123<span class="w"> </span>--dry-run<span class="w">    </span><span class="c1"># report first</span>
+<span class="linenos"> 80</span>python<span class="w"> </span>code/combine.py<span class="w"> </span>/path/to/copied/abc123<span class="w">              </span><span class="c1"># merge + rebuild results and figures</span>
+<span class="linenos"> 81</span><span class="sb">```</span>
+<span class="linenos"> 82</span>
+<span class="linenos"> 83</span>It checks the settings match, copies what is missing, merges cell rows and manifests, and
+<span class="linenos"> 84</span>never mixes a model with results computed from a different model of the same cell.
 <span class="linenos"> 85</span>
-<span class="linenos"> 86</span><span class="k">-</span><span class="w"> </span><span class="gs">**Ground truth**</span> = fates of <span class="sb">`eval.n_eval_per_mode * K`</span> seeds under the learned sampler,
-<span class="linenos"> 87</span>  cached at train time. Metrics: full accuracy, mode accuracy / macro F1, hallucination
-<span class="linenos"> 88</span>  precision / recall / F1. Every number is mean ± std over <span class="sb">`n_seeds`</span> repeats (seeds 0, 100,
-<span class="linenos"> 89</span>  200, ...), each with its own mode placement, model and eval seeds.
-<span class="linenos"> 90</span><span class="k">-</span><span class="w"> </span><span class="gs">**Training recipe**</span> (<span class="sb">`conf/train/base.yaml`</span>): Adam, cosine lr decay, gradient clipping, EMA
-<span class="linenos"> 91</span>  weights; retried with more steps while the probe hallucination rate exceeds <span class="sb">`hall_target`</span>.
-<span class="linenos"> 92</span>  Width 256 for d ≤ 64, 1024 above (the R99 margin shrinks like 1/√d). Each seed has its own
-<span class="linenos"> 93</span>  RNG, so training seeds together (one CUDA graph, ~15x faster) or apart gives the same model.
-<span class="linenos"> 94</span><span class="k">-</span><span class="w"> </span><span class="gs">**T_train = 500.**</span> At 150 steps even the <span class="ge">*exact*</span> score hallucinates in high d (15/52/93/100 %
-<span class="linenos"> 95</span>  at d = 32/64/128/256): a mode's 99% ball is a shell of relative width ~1.2/√d, so small
-<span class="linenos"> 96</span>  discretisation error ejects samples. With T = 500 the exact score stays ≤ 0.6 % up to d = 256.
-<span class="linenos"> 97</span><span class="k">-</span><span class="w"> </span><span class="gs">**Exact field.**</span> DDIM: closed-form GMM score, Heun steps (data → seed → data round-trips to
-<span class="linenos"> 98</span>  the same label). Flow: the marginal OT velocity including the within-mode variance.
-<span class="linenos"> 99</span><span class="k">-</span><span class="w"> </span><span class="gs">**Anchors**</span> (<span class="sb">`conf/anchors/`</span>): per mode, b points uniform in the R99 ball plus b/2 in the band
-<span class="linenos">100</span>  R99 .. R99 + 2σ (hallucination class); altered_knn uses weighted concentric rings instead.
+<span class="linenos"> 86</span><span class="gu">## Method notes</span>
+<span class="linenos"> 87</span>
+<span class="linenos"> 88</span><span class="k">-</span><span class="w"> </span><span class="gs">**Ground truth**</span> = fates of <span class="sb">`eval.n_eval_per_mode * K`</span> seeds under the learned sampler,
+<span class="linenos"> 89</span>  cached at train time. Metrics: full accuracy, mode accuracy / macro F1, hallucination
+<span class="linenos"> 90</span>  precision / recall / F1. Every number is mean ± std over <span class="sb">`n_seeds`</span> repeats (seeds 0, 100,
+<span class="linenos"> 91</span>  200, ...), each with its own mode placement, model and eval seeds.
+<span class="linenos"> 92</span><span class="k">-</span><span class="w"> </span><span class="gs">**Training recipe**</span> (<span class="sb">`conf/train/base.yaml`</span>): Adam, cosine lr decay, gradient clipping, EMA
+<span class="linenos"> 93</span>  weights; retried with more steps while the probe hallucination rate exceeds <span class="sb">`hall_target`</span>.
+<span class="linenos"> 94</span>  Width 256 for d ≤ 64, 1024 above (the R99 margin shrinks like 1/√d). Each seed has its own
+<span class="linenos"> 95</span>  RNG, so training seeds together (one CUDA graph, ~15x faster) or apart gives the same model.
+<span class="linenos"> 96</span><span class="k">-</span><span class="w"> </span><span class="gs">**T_train = 500.**</span> At 150 steps even the <span class="ge">*exact*</span> score hallucinates in high d (15/52/93/100 %
+<span class="linenos"> 97</span>  at d = 32/64/128/256): a mode&#39;s 99% ball is a shell of relative width ~1.2/√d, so small
+<span class="linenos"> 98</span>  discretisation error ejects samples. With T = 500 the exact score stays ≤ 0.6 % up to d = 256.
+<span class="linenos"> 99</span><span class="k">-</span><span class="w"> </span><span class="gs">**Exact field.**</span> DDIM: closed-form GMM score, Heun steps (data → seed → data round-trips to
+<span class="linenos">100</span>  the same label). Flow: the marginal OT velocity including the within-mode variance.
+<span class="linenos">101</span><span class="k">-</span><span class="w"> </span><span class="gs">**Other solvers of the DDIM network**</span> (<span class="sb">`process=heun|rk45|dpmpp2m`</span>, <span class="sb">`code/processes/{heun,rk45,dpmpp2m}.py`</span>, shared base <span class="sb">`pf_ode.py`</span>).
+<span class="linenos">102</span>  DDIM is the Euler method for the probability-flow ODE dy/dσ = ε_θ(x, t) (y = x/√ᾱ,
+<span class="linenos">103</span>  σ = √((1−ᾱ)/ᾱ)), so the same trained network can be integrated by any ODE solver. These three
+<span class="linenos">104</span>  load <span class="sb">`checkpoints/ddim/`</span> (they are never trained; phase 1 skips them), step over the same
+<span class="linenos">105</span>  T_train grid and share DDIM&#39;s exact field and anchors; only the ground truth (where the learned
+<span class="linenos">106</span>  sampler sends each seed) differs, cached under <span class="sb">`checkpoints/&lt;process&gt;/`</span>. Heun: Euler predictor +
+<span class="linenos">107</span>  trapezoid corrector (2 network calls / step); RK45: fixed-step Dormand–Prince, 5th order
+<span class="linenos">108</span>  (6 calls); DPM-Solver++(2M): 2nd-order multistep in log-SNR on the x0-prediction (1 call, its
+<span class="linenos">109</span>  first-order step is DDIM). Stochastic samplers (DDPM, DPM-Solver++ SDE) are not included: a seed
+<span class="linenos">110</span>  has no single fate under them.
+<span class="linenos">111</span><span class="k">-</span><span class="w"> </span><span class="gs">**Ground-truth cache.**</span> <span class="sb">`gt_cache/`</span> stores the evaluation seeds themselves with their fates
+<span class="linenos">112</span>  (and the GPU that made them); evaluation reads the points back instead of regenerating them.
+<span class="linenos">113</span><span class="k">-</span><span class="w"> </span><span class="gs">**Anchors**</span> (<span class="sb">`conf/anchors/`</span>): per mode, b points uniform in the R99 ball plus b/2 in the band
+<span class="linenos">114</span>  R99 .. R99 + 2σ (hallucination class); altered_knn uses weighted concentric rings instead.
 </code></pre></div>
 </div></section></section><section class="file" id="file-requirements-txt"><div class="filehead"><h2><code>requirements.txt</code></h2><span class="meta">6 lines · shown in full</span></div><section class="chunk"><div class="note"><h3>Python packages<span class="lines">lines 1–6</span></h3><p>Tested with Python 3.12 and torch 2.5.1 (CUDA 12.1 wheels), per the README.</p></div><div class="code"><div class="hl"><pre><span></span><code><span class="linenos">1</span>torch&gt;=2.0
 <span class="linenos">2</span>numpy&gt;=1.24
@@ -363,8 +406,8 @@ For DDIM, part of the effect may also be the schedule issue described at
 <span class="linenos">3</span>*.pyc
 </code></pre></div>
 </div></section></section><div class="pager"><a href="index.html"><span class="dir">← previous</span>The seed-fate atlas, explained</a><a class="next" href="main.html"><span class="dir">next →</span>Starting a run: main.py and runstate.py</a></div>
-<div class="foot">Generated by <code>preview_code/build.py</code> from commit ffe83f6
-on 2026-09-23. The code shown is read from the repository at build time;
+<div class="foot">Generated by <code>preview_code/build.py</code> from commit 27c02eb + uncommitted changes
+on 2026-09-24. The code shown is read from the repository at build time;
 after changing the code, run <code>python preview_code/build.py</code> again.</div>
 </main>
 </body>

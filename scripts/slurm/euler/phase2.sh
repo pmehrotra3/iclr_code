@@ -33,6 +33,7 @@ EVAL_MEM=${EVAL_MEM:-16G}
 EVAL_GRES=${EVAL_GRES:-gpu:1}             # e.g. gpu:rtxa4500:1 to pin evaluate to one GPU type
 
 vname() { [ "$1" = true ] && echo weighted || echo unweighted; }
+ckproc() { case "$1" in heun|rk45|dpmpp2m) echo ddim ;; *) echo "$1" ;; esac; }   # heun/rk45/dpmpp2m sample the DDIM checkpoints
 KLIST="[$(echo $KS | tr ' ' ',')]"
 COMMON="data=gmm process.T_train=$TTRAIN sweep.K=$KLIST sweep.anchors=$ANCHORS seed=$SEED n_seeds=$NSEEDS data.radius=$RADBASE eval.n_eval_per_mode=$NEVAL train.force_retrain=false run_id=$RUN_ID"
 TDIR=slurm/tasks_${RUN_ID}_phase2; rm -rf "$TDIR"; mkdir -p "$TDIR"
@@ -41,14 +42,14 @@ cell_done() {  # <process> <variant> <d> <K>: all seeds on disk, or skipped by d
   [ "$3" = 2 ] && [ "$4" = 16 ] && return 0
   local s
   for ((s = 0; s < NSEEDS; s++)); do
-    [ -f "checkpoints/$1/$2/checkpoints/model_d$3_K$4_s$((SEED + 100 * s)).pt" ] || return 1
+    [ -f "checkpoints/$(ckproc $1)/$2/checkpoints/model_d$3_K$4_s$((SEED + 100 * s)).pt" ] || return 1
   done
 }
 p1_task() {  # <process> <weighted> <d> <K> -> "<jobid>_<index>" of the phase-1 task training it
   local pair job list i
   for pair in $PHASE1; do
     job=${pair%%:*}; list=${pair#*:}
-    i=$(grep -n "process=$1 .*data.weighted=$2 .*sweep.d=\[$3\] sweep.K=\[$4\] " "$list" | head -1 | cut -d: -f1)
+    i=$(grep -n "process=$(ckproc $1) .*data.weighted=$2 .*sweep.d=\[$3\] sweep.K=\[$4\] " "$list" | head -1 | cut -d: -f1)
     [ -n "$i" ] && { echo "${job}_$((i - 1))"; return; }
   done
 }

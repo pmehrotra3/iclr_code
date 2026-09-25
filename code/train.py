@@ -22,7 +22,7 @@ import torch
 from omegaconf import OmegaConf
 
 import core
-from processes.factory import make_process
+from processes.factory import checkpoint_process, make_process
 
 
 # ---- paths and caches (shared with evaluate / visualize / combine) -----------------------
@@ -214,8 +214,12 @@ def train_cell(cfg, d, K, seeds, device):
 
 
 def run(cfg):
-    device = core.get_device(cfg.device)
     sampler, variant = cfg.process.name, variant_of(cfg)
+    if checkpoint_process(sampler) != sampler:
+        print(f"[train:{sampler}] samples the {checkpoint_process(sampler)} checkpoints with another "
+              f"solver: nothing to train (train process={checkpoint_process(sampler)})")
+        return
+    device = core.get_device(cfg.device)
     manifest, n_bad = {}, 0
     for d in cfg.sweep.d:
         for K in cfg.sweep.K:

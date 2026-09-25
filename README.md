@@ -19,7 +19,8 @@ code/
   visualize.py     stage 3: results.json -> (d, K) heatmaps and a LaTeX/PNG table
   core.py          numerics: GMM, score network, training recipe, exact sampler, anchors
   fate.py          the fate predictors (knn, altered_knn, quadratic, polar) and metrics
-  processes/       ddim.py (VP diffusion, DDIM), flow.py (flow matching, OT path)
+  processes/       ddim.py (VP diffusion, DDIM), flow.py (flow matching, OT path),
+                   heun.py / rk45.py / dpmpp2m.py (the DDIM network, other solvers; shared base pf_ode.py)
   runstate.py      named runs: settings check, invocation log
   combine.py       merge a run built on another machine into this one
   rank_probe.py    standalone: is the hallucination set low-rank?
@@ -42,6 +43,7 @@ pip install -r requirements.txt     # tested: python 3.12, torch 2.5.1+cu121
 python code/main.py                                   # the sweep in conf/sweep/base.yaml
 python code/main.py sweep.d=[16,64] sweep.K=[4,8]     # another grid
 python code/main.py process=flow                      # flow matching instead of DDIM
+python code/main.py process=heun stages=[evaluate]    # the DDIM models, Heun solver (also rk45, dpmpp2m)
 python code/main.py stages=[visualize]                # re-plot only
 ./scripts/main.sh                                     # the full grid on every GPU
 DIMS="512" KS="2 4 8 16" PROCESSES=ddim ./scripts/main.sh
@@ -96,5 +98,17 @@ never mixes a model with results computed from a different model of the same cel
   discretisation error ejects samples. With T = 500 the exact score stays ≤ 0.6 % up to d = 256.
 - **Exact field.** DDIM: closed-form GMM score, Heun steps (data → seed → data round-trips to
   the same label). Flow: the marginal OT velocity including the within-mode variance.
+- **Other solvers of the DDIM network** (`process=heun|rk45|dpmpp2m`, `code/processes/{heun,rk45,dpmpp2m}.py`, shared base `pf_ode.py`).
+  DDIM is the Euler method for the probability-flow ODE dy/dσ = ε_θ(x, t) (y = x/√ᾱ,
+  σ = √((1−ᾱ)/ᾱ)), so the same trained network can be integrated by any ODE solver. These three
+  load `checkpoints/ddim/` (they are never trained; phase 1 skips them), step over the same
+  T_train grid and share DDIM's exact field and anchors; only the ground truth (where the learned
+  sampler sends each seed) differs, cached under `checkpoints/<process>/`. Heun: Euler predictor +
+  trapezoid corrector (2 network calls / step); RK45: fixed-step Dormand–Prince, 5th order
+  (6 calls); DPM-Solver++(2M): 2nd-order multistep in log-SNR on the x0-prediction (1 call, its
+  first-order step is DDIM). Stochastic samplers (DDPM, DPM-Solver++ SDE) are not included: a seed
+  has no single fate under them.
+- **Ground-truth cache.** `gt_cache/` stores the evaluation seeds themselves with their fates
+  (and the GPU that made them); evaluation reads the points back instead of regenerating them.
 - **Anchors** (`conf/anchors/`): per mode, b points uniform in the R99 ball plus b/2 in the band
   R99 .. R99 + 2σ (hallucination class); altered_knn uses weighted concentric rings instead.

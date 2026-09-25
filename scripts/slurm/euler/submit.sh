@@ -30,6 +30,7 @@ EXTRA=${EXTRA:-}
 RUN_ID=${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)}
 
 vname() { [ "$1" = true ] && echo weighted || echo unweighted; }
+ckproc() { case "$1" in heun|rk45|dpmpp2m) echo ddim ;; *) echo "$1" ;; esac; }   # heun/rk45/dpmpp2m sample the DDIM checkpoints
 DLIST="[$(echo $DIMS | tr ' ' ',')]"
 KLIST="[$(echo $KS | tr ' ' ',')]"
 COMMON="data=$DATASET process.T_train=$TTRAIN seed=$SEED n_seeds=$NSEEDS data.radius=$RADBASE run_id=$RUN_ID $EXTRA"
@@ -39,7 +40,7 @@ TDIR=slurm/tasks_$RUN_ID; mkdir -p "$TDIR"
 : > "$TDIR/train.txt"
 for D in $(echo $DIMS | tr ' ' '\n' | sort -rn); do
   for K in $(echo $KS | tr ' ' '\n' | sort -rn); do
-    for P in $PROCESSES; do for W in $WEIGHTED; do V=$(vname $W)
+    for P in $PROCESSES; do [ "$(ckproc $P)" = "$P" ] || continue; for W in $WEIGHTED; do V=$(vname $W)
       echo "${RUN_ID}_${P}_${V}_train_d${D}_K${K}.log|process=$P data.weighted=$W sweep.d=[$D] sweep.K=[$K] stages=[train] train.force_retrain=false train.graph_streams=true $COMMON" >> "$TDIR/train.txt"
     done; done
   done

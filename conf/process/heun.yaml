@@ -1,0 +1,8 @@
+# process/heun - the trained DDIM network sampled with Heun's method (2 network calls per step);
+# reuses checkpoints/ddim and every DDIM setting (code/processes/heun.py), never trained
+
+defaults:
+  - ddim
+  - _self_
+
+name: heun

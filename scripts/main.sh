@@ -27,7 +27,7 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
                                                                 # multi-GB anchor tensors; avoid fragmentation
 RUN=${RUN:-${RUN_ID:-abc123}}                                   # the run name: output/$RUN/
 
-PROCESSES=${PROCESSES:-"ddim flow"}
+PROCESSES=${PROCESSES:-"ddim flow"}                              # also: heun rk45 dpmpp2m (the ddim models, other solvers)
 DIMS=${DIMS:-"2 4 8 16 32 64 128 256"}                         # dimensions (d=1024 is hours per cell; add it explicitly)
 ORDER=${ORDER:-asc}                                             # train-job order by cell size: asc | desc
 KS=${KS:-"2 4 8 16 32"}                                            # space-separated mode counts
@@ -116,6 +116,7 @@ echo " data=$DATASET  weighted=[$WEIGHTED]  (predictors set in conf/config.yaml)
 echo "=============================================================="
 
 vname() { [ "$1" = true ] && echo weighted || echo unweighted; }   # data.weighted -> folder name
+ckproc() { case "$1" in heun|rk45|dpmpp2m) echo ddim ;; *) echo "$1" ;; esac; }   # heun/rk45/dpmpp2m sample the DDIM checkpoints
 
 # ---- phase 1: train, ONE job per (process, variant, d, K) cell (all seeds together) ----
 # Smallest cells first so results (and phase 2 for them) appear early; ORDER=desc for biggest-first.
@@ -124,6 +125,7 @@ echo "-- phase 1: train (one job per cell, $NSEEDS seeds each, $JOBS_PER_GPU job
 STREAMS=true; [ "$JOBS_PER_GPU" -gt 1 ] && STREAMS=false        # see core.run_optimizers
 JOBS=()
 for P in $PROCESSES; do
+  [ "$(ckproc $P)" = "$P" ] || continue                   # nothing to train: uses ddim's models
   for W in $WEIGHTED; do V=$(vname $W)
     for D in $(echo $DIMS | tr ' ' '\n' | sort $SORTFLAG); do
       for K in $(echo $KS | tr ' ' '\n' | sort $SORTFLAG); do

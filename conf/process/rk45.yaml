@@ -1,0 +1,8 @@
+# process/rk45 - the trained DDIM network sampled with fixed-step Dormand-Prince RK45 (6 network calls per step);
+# reuses checkpoints/ddim and every DDIM setting (code/processes/rk45.py), never trained
+
+defaults:
+  - ddim
+  - _self_
+
+name: rk45

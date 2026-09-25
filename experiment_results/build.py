@@ -26,7 +26,8 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
-PROCESSES = [("ddim", "DDIM"), ("flow", "Flow matching")]
+PROCESSES = [("ddim", "DDIM"), ("flow", "Flow matching"), ("heun", "Heun"), ("rk45", "RK45"),
+             ("dpmpp2m", "DPM-Solver++(2M)")]      # a process without results is skipped
 VARIANTS = [("unweighted", "Unweighted"), ("weighted", "Weighted")]
 TS = [250, 500, 750]
 MODELS = [("knn", "$k$NN"), ("altered_knn", "altered $k$NN"), ("quadratic", "quadratic"), ("polar3", "polar")]

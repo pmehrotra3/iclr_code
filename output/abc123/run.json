@@ -44,6 +44,13 @@
     }
   },
   "process": {
+    "ddim": {
+      "T_train": 500,
+      "name": "ddim",
+      "beta_min": 0.0001,
+      "beta_max": 0.02,
+      "true_order": "heun"
+    },
     "flow": {
       "T_train": 500,
       "name": "flow",
@@ -51,9 +58,23 @@
       "solver": "euler",
       "true_solver": "heun"
     },
-    "ddim": {
+    "heun": {
       "T_train": 500,
-      "name": "ddim",
+      "name": "heun",
+      "beta_min": 0.0001,
+      "beta_max": 0.02,
+      "true_order": "heun"
+    },
+    "rk45": {
+      "T_train": 500,
+      "name": "rk45",
+      "beta_min": 0.0001,
+      "beta_max": 0.02,
+      "true_order": "heun"
+    },
+    "dpmpp2m": {
+      "T_train": 500,
+      "name": "dpmpp2m",
       "beta_min": 0.0001,
       "beta_max": 0.02,
       "true_order": "heun"
@@ -125,6 +146,6 @@
       "arch": "polar"
     }
   },
-  "created": "2026-09-24 13:39:39",
-  "updated": "2026-09-24 13:40:21"
+  "created": "2026-09-24 18:50:59",
+  "updated": "2026-09-24 23:43:21"
 }

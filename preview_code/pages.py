@@ -490,15 +490,21 @@ and each process implements them:</p>
 <tr><td><code>true_field_backtrack</code></td><td>endpoints → seeds with the exact field</td></tr>
 <tr><td><code>seeds</code></td><td>reproducible N(0, I) starting points</td></tr>
 </table></div>
-<p>Adding a third process means writing one more subclass and registering it in
-<code>factory.py</code>.</p>""",
+<p>Adding a process means writing one more subclass and registering it in
+<code>factory.py</code>. Heun, RK45 and DPM-Solver++(2M) are subclasses of DDIM that only replace
+<code>sample</code>.</p>""",
      "notes": [
          ("class Process", "Process: the shared part",
           """<ul>
 <li>The constructor stores the mode centres, the variance σ², the number of steps T and the
 mixing weights (plus their logarithms, which the exact field needs).</li>
-<li><code>seeds(N, d, seed)</code>: N standard-normal points from their own generator, so seed 1
-always gives the same points.</li>
+<li><code>seeds(N, d, seed)</code>: N standard-normal points from their own generator, drawn on
+the <b>CPU</b> and then moved to the device. The GPU's generator can lay out its numbers
+differently on another GPU model, so the same seed would not give the same points on every
+machine; the CPU's does.</li>
+<li><code>ckpt_process</code>: <code>None</code> for a process with its own models. Heun, RK45 and
+DPM-Solver++(2M) (their shared base <a href="#file-code-processes-pf-ode-py">pf_ode.py</a>) set it to
+<code>"ddim"</code>: they load the DDIM checkpoints and are never trained.</li>
 <li><code>arch</code>, <code>n_train</code>, <code>optim_kwargs</code>: read the network size,
 training-set size and recipe from the configuration.</li>
 <li><code>label(model, X0, R99)</code>: seeds → fates. Pass <code>model=None</code> to use the exact
@@ -566,11 +572,80 @@ integration cannot undo the forward one.</p>"""),
          ("def true_field_forward", "The exact field, both directions",
           "<p>Integrate the exact velocity forwards or backwards with <code>true_solver</code> (Heun).</p>"),
      ]},
+    {"path": "code/processes/pf_ode.py",
+     "intro_title": "Same DDIM network, other ODE solvers (the shared base)",
+     "intro": """<p>DDIM's deterministic sampler is the <b>Euler method</b> for one ODE, the
+probability-flow ODE of the diffusion. Written in rescaled variables it is simply</p>
+<div class="formula">dy/dσ = ε_θ(x, t),    y = x / √ᾱ,   σ = √((1 − ᾱ)/ᾱ),   x = y / √(1 + σ²)</div>
+<p>so the network that DDIM was trained with can be integrated by <b>any</b> ODE solver. Only the
+discretisation changes, never the model. The three processes (heun.py, rk45.py, dpmpp2m.py, one solver each) load
+<code>checkpoints/ddim/</code> untouched (they are never trained; phase 1 skips them) and step over
+the same T_train grid:</p>
+<div class="tablewrap"><table>
+<tr><th>process</th><th>solver</th><th>order</th><th>network calls / step</th></tr>
+<tr><td><code>heun</code></td><td>Euler predictor + trapezoid corrector</td><td>2</td><td>2</td></tr>
+<tr><td><code>rk45</code></td><td>fixed-step Dormand–Prince (scipy's RK45 without step control)</td><td>5</td><td>6</td></tr>
+<tr><td><code>dpmpp2m</code></td><td>DPM-Solver++(2M), multistep in log-SNR</td><td>2</td><td>1</td></tr>
+</table></div>
+<p>The exact field, the anchors and the calibration seeds are DDIM's, so the atlas the predictors
+learn is the same; only the ground truth (where each solver sends the evaluation seeds) differs.
+It is cached under <code>checkpoints/&lt;process&gt;/</code>, and results go to
+<code>output/&lt;run_id&gt;/&lt;process&gt;/</code>. Stochastic samplers (DDPM, DPM-Solver++ SDE)
+are left out: under them a seed has no single fate to predict.</p>""",
+     "notes": [
+         ("class PFODEProcess", "PFODEProcess: DDIM with another sample()",
+          """<ul>
+<li>Inherits everything from <a href="#file-code-processes-ddim-py">DDIMProcess</a>: the schedule ᾱ, the exact field,
+<code>true_order</code>. <code>ckpt_process = "ddim"</code> tells train.py and evaluate.py where
+its models are.</li>
+<li><code>sig</code>: σ at each grid index, increasing with the index (index T−1 is noise).</li>
+<li><code>train_closure</code> refuses: train <code>process=ddim</code> instead.</li>
+<li><code>sample</code> loops over chunks <i>outside</i> the steps, because DPM-Solver++ keeps the
+previous step's prediction per point.</li>
+<li><code>_eps</code> asks the network at a grid index; <code>_index_of</code> turns a σ that lies
+between two grid points into a fractional index (the time embedding is continuous, so the network
+can be asked in between). <code>_f</code> is the right-hand side dy/dσ.</li>
+</ul>"""),
+     ]},
+    {"path": "code/processes/heun.py", "intro_title": "Heun",
+     "intro": "<p>2nd order, 2 network calls per step.</p>",
+     "notes": [
+         ("class HeunProcess", "Heun",
+          """<p>Take a DDIM (Euler) step to predict the end point, ask the network there too, and redo
+the step with the average of the two noise predictions. Both evaluations sit on grid points, so
+the network is only asked about times it was trained on. It is the learned-network twin of the
+exact field's <code>true_order=heun</code> transport; the unit test checks they match step for
+step when fed the exact noise.</p>"""),
+     ]},
+    {"path": "code/processes/rk45.py", "intro_title": "RK45 (Dormand–Prince)",
+     "intro": "<p>5th order, 6 network calls per step.</p>",
+     "notes": [
+         ("_DP_C = ", "The Dormand–Prince table",
+          """<p>Nodes c, stage matrix a and 5th-order weights b of the Dormand–Prince pair. Its 7th
+stage only feeds the embedded error estimate used for adaptive step sizes, which a fixed-step
+solver does not need, so it is omitted.</p>"""),
+         ("class RK45Process", "RK45 (Dormand–Prince)",
+          """<p>Works in (y, σ): six slopes per step at σ between the two grid points, combined with
+the 5th-order weights. y starts at x/√ᾱ<sub>T−1</sub> and is turned back into x at the end.</p>"""),
+     ]},
+    {"path": "code/processes/dpmpp2m.py", "intro_title": "DPM-Solver++(2M)",
+     "intro": "<p>2nd order multistep, 1 network call per step.</p>",
+     "notes": [
+         ("class DPMpp2MProcess", "DPM-Solver++(2M)",
+          """<p>With α = √ᾱ, s = √(1−ᾱ), λ = log(α/s) and the network's data prediction
+x̂₀ = (x − s·ε)/α, one step from s to t is</p>
+<div class="formula">x_t = (s_t/s_s)·x_s − α_t·(e^(−h) − 1)·D,     h = λ_t − λ_s</div>
+<p>With D = x̂₀ this is exactly a DDIM step (used for the first step). Afterwards D blends the
+current and previous predictions, D = (1 + 1/(2r))·x̂₀ − (1/(2r))·x̂₀<sub>prev</sub> with
+r = h<sub>prev</sub>/h, which makes it second order for the cost of one network call per step.</p>"""),
+     ]},
     {"path": "code/processes/factory.py",
      "intro_title": "Choosing a process by name",
-     "intro": """<p><code>make_process("ddim", ...)</code> or <code>make_process("flow", ...)</code>;
-the name comes from <code>process=...</code> in the configuration. An unknown name fails with the
-list of valid ones.</p>"""},
+     "intro": """<p><code>make_process(name, ...)</code> with name <code>ddim</code>,
+<code>flow</code>, <code>heun</code>, <code>rk45</code> or <code>dpmpp2m</code>; the name comes from
+<code>process=...</code> in the configuration. An unknown name fails with the list of valid ones.
+<code>checkpoint_process(name)</code> says whose models a process uses: itself, or
+<code>ddim</code> for the three solvers of the DDIM network.</p>"""},
 ]
 
 # =============================================================================================
@@ -586,7 +661,7 @@ the evaluation seeds (the <b>ground truth</b> used by stage 2).</p>
 safely at any time.</p>
 <div class="formula">checkpoints/&lt;process&gt;/&lt;variant&gt;/
     checkpoints/model_d&lt;d&gt;_K&lt;K&gt;_s&lt;seed&gt;.pt   the trained network + everything about its cell
-    gt_cache/d&lt;d&gt;_K&lt;K&gt;_s&lt;seed&gt;.pt           fates of the evaluation seeds under it
+    gt_cache/d&lt;d&gt;_K&lt;K&gt;_s&lt;seed&gt;.pt           the evaluation seeds and their fates under it
     manifest.json                               one summary line per model</div>""",
     "notes": [
         ("def variant_of", "Paths: where everything is stored",
@@ -605,9 +680,12 @@ whatever K is (K = 2 → 100 000, K = 16 → 800 000).</li>
 is killed mid-save the old file (or no file) remains, never a corrupt half-written one that a
 later resume would trust.</p>"""),
         ("def save_gt_cache", "The ground-truth cache",
-         """<p>Stores the fate of each evaluation seed plus what it was computed with.
-<code>load_gt_cache</code> only accepts a cache made for the same number of seeds and the same
-repeat seed; anything else (or an unreadable file) counts as missing and is recomputed.</p>"""),
+         """<p>Stores the evaluation seeds <b>themselves</b>, the fate of each, the GPU that
+computed them and what they were computed with. Evaluation reads the points back instead of
+regenerating them, so the fates are always scored against the exact points they belong to, on
+any machine. <code>load_gt_cache</code> only accepts a cache made for the same number of seeds
+and the same repeat seed that holds the points; anything else (an older cache with fates only,
+or an unreadable file) counts as missing and is recomputed.</p>"""),
         ("def _git_commit", "_git_commit(): which code made this model",
          """<p>The current commit hash, with "-dirty" if there are uncommitted changes. Saved inside
 every checkpoint so you can always tell which version of the code trained it.</p>"""),
@@ -690,8 +768,10 @@ as a list of rows, one per (budget, predictor). Saved atomically (temporary file
 <code>_key</code> identifies a row; <code>row_order</code> sorts rows in one fixed order so that
 files built in any order end up identical.</p>"""),
         ("def _ground_truth", "_ground_truth(): what the learned model really does",
-         """<p>Makes the evaluation seeds (repeat seed + 1, the same as train.py used) and takes their
-fates from train.py's cache, or computes and caches them if the cache is missing.</p>"""),
+         """<p>Reads the evaluation seeds and their fates from the cache (train.py writes it, or an
+earlier evaluation did). If there is none, makes the seeds (repeat seed + 1, the same as train.py
+uses), runs the learned sampler on them and caches points and fates together. For heun / rk45 /
+dpmpp2m the model is DDIM's (<code>checkpoint_process</code>) but the cache is their own.</p>"""),
         ("def eval_one", "eval_one(): one cell, start to finish",
          """<p><b>The heart of the project.</b></p>
 <ol>
@@ -1025,6 +1105,14 @@ note on <a href="core.html#make_schedule">make_schedule</a> about T changing the
     {"path": "conf/process/flow.yaml", "intro_title": "Flow matching",
      "intro": """<p>σ<sub>min</sub>, the tiny spread left at t = 1 on the straight paths; the learned
 sampler's solver (Euler) and the exact field's (Heun).</p>"""},
+    {"path": "conf/process/heun.yaml", "intro_title": "Heun on the DDIM network",
+     "intro": """<p>Everything from <code>ddim.yaml</code> (its <code>defaults</code> list pulls it in);
+only the name changes. <code>rk45.yaml</code> and <code>dpmpp2m.yaml</code> are the same with their
+own names. See <a href="processes.html#file-code-processes-heun-py">heun.py</a> and its base <a href="processes.html#file-code-processes-pf-ode-py">pf_ode.py</a>.</p>"""},
+    {"path": "conf/process/rk45.yaml", "intro_title": "RK45 on the DDIM network",
+     "intro": "<p>As heun.yaml, with the Dormand–Prince solver.</p>"},
+    {"path": "conf/process/dpmpp2m.yaml", "intro_title": "DPM-Solver++(2M) on the DDIM network",
+     "intro": "<p>As heun.yaml, with DPM-Solver++(2M).</p>"},
     {"path": "conf/data/base.yaml", "intro_title": "The data, shared part",
      "intro": """<p><code>mass_q</code> = 0.99 is where "99%" in R99 comes from: change it and the line
 between a mode and a hallucination moves. <code>weighted</code> chooses the variant.</p>"""},
@@ -1193,6 +1281,24 @@ purpose.</p>"""),
           """<p>Two seeds trained together in one CUDA graph must give bit-identical weights to each
 seed trained alone: the private random streams of
 <a href="core.html#step_generator">step_generator</a> at work.</p>"""),
+     ]},
+    {"path": "code/unit_tests/test_samplers.py",
+     "intro_title": "The other solvers follow the same ODE",
+     "intro": """<p>Heun, RK45 and DPM-Solver++(2M) are fed the <b>exact</b> noise of a small Gaussian
+mixture in place of a network. Then they must behave like the exact field, which is the one
+thing any correct solver of the same ODE has to do.</p>""",
+     "notes": [
+         ("class ExactEps", "A network that is exactly right",
+          """<p>Looks like a ScoreNet (takes x and a grid index, returns ε) but computes the exact
+noise of the mixture, interpolating ᾱ for the fractional indices RK45 asks about.</p>"""),
+         ("def test_heun_is_the_exact_fields_heun_transport", "Heun = the exact field's Heun",
+          """<p>With the exact noise, <code>heun</code> must reproduce
+<a href="core.html#forward_true">core.forward_true</a> (Heun order) step for step.</p>"""),
+         ("def test_every_solver_follows_the_exact_field", "Every solver lands on the same modes",
+          "<p>DDIM, Heun, RK45 and DPM-Solver++(2M) must send more than 99% of seeds to the exact field's fate.</p>"),
+         ("def test_they_use_ddim_checkpoints_and_never_train", "Wiring",
+          """<p>The three solvers use the DDIM checkpoints, inherit every DDIM setting from their
+config, and phase 1 trains nothing for them.</p>"""),
      ]},
 ]
 

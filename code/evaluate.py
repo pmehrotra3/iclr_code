@@ -30,7 +30,7 @@ from omegaconf import OmegaConf
 
 import core
 import fate
-from processes.factory import make_process
+from processes.factory import checkpoint_process, make_process
 from train import ckpt_path, sweep_dir, load_gt_cache, save_gt_cache, n_eval_for, variant_of
 
 
@@ -135,7 +135,8 @@ def eval_one(cfg, d, K, seed, device):
     todo = want - {_key(r) for r in cached}
     if not todo:
         return cached
-    path = ckpt_path(cfg.paths.checkpoints, process, d, K, seed, variant)
+    # heun / rk45 / dpmpp2m load the DDIM network; their ground truth is cached under their own name
+    path = ckpt_path(cfg.paths.checkpoints, checkpoint_process(process), d, K, seed, variant)
     if not os.path.exists(path):
         return None
 
