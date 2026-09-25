@@ -30,6 +30,7 @@ SPLIT_D=${SPLIT_D:-256}
 SMALL_TIME=${SMALL_TIME:-08:00:00}
 BIG_TIME=${BIG_TIME:-24:00:00}
 EVAL_MEM=${EVAL_MEM:-16G}
+EVAL_GRES=${EVAL_GRES:-gpu:1}             # e.g. gpu:rtxa4500:1 to pin evaluate to one GPU type
 
 vname() { [ "$1" = true ] && echo weighted || echo unweighted; }
 KLIST="[$(echo $KS | tr ' ' ',')]"
@@ -82,7 +83,7 @@ echo "run_id : $RUN_ID   (task lists in $TDIR/)"
 EVAL_IDS=""
 for key in "${!EGROUPS[@]}"; do
   lim=${key%%|*}; dep=${key#*|}; f=${EGROUPS[$key]}
-  id=$(arr atlas-eval "$f" "$lim" "${dep:+afterok:$dep}" --gres=gpu:1 --mem="$EVAL_MEM")
+  id=$(arr atlas-eval "$f" "$lim" "${dep:+afterok:$dep}" --gres="$EVAL_GRES" --mem="$EVAL_MEM")
   EVAL_IDS="$EVAL_IDS:$id"
   echo "eval   : $id  ($(wc -l < "$f") tasks, limit $lim, waits on: ${dep:-nothing})"
 done

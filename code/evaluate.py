@@ -113,11 +113,12 @@ def _ground_truth(cfg, proc, model, ck, d, K, seed, device):
     it is there, otherwise computed and cached now)."""
     process, variant = cfg.process.name, variant_of(cfg)
     n_eval = n_eval_for(cfg, K)
+    cached = load_gt_cache(cfg.paths.checkpoints, process, d, K, n_eval, seed, device, variant)
+    if cached is not None:
+        return cached
     X = proc.seeds(n_eval, d, seed + 1)
-    gt = load_gt_cache(cfg.paths.checkpoints, process, d, K, n_eval, seed, device, variant)
-    if gt is None:
-        gt = core.label_fate(proc.sample(model, X), ck["means"], ck["R99"])
-        save_gt_cache(cfg.paths.checkpoints, process, d, K, gt, n_eval, ck["T"], ck["R99"], seed, variant)
+    gt = core.label_fate(proc.sample(model, X), ck["means"], ck["R99"])
+    save_gt_cache(cfg.paths.checkpoints, process, d, K, X, gt, n_eval, ck["T"], ck["R99"], seed, variant)
     return X, gt
 
 

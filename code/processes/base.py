@@ -32,8 +32,10 @@ class Process(ABC):
         self.logw = core.log_weights(self.weights, device)
 
     def seeds(self, N, d, seed):
-        g = torch.Generator(device=self.device).manual_seed(seed)
-        return torch.randn(N, d, generator=g, device=self.device)
+        """Drawn on the CPU, then moved: CUDA's generator lays its stream out by the GPU model
+        (and torch version), so the same seed would give other points on another machine."""
+        g = torch.Generator().manual_seed(seed)
+        return torch.randn(N, d, generator=g).to(self.device)
 
     def arch(self, d):
         """ScoreNet kwargs for dimension d (see core.net_arch)."""

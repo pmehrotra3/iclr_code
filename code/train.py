@@ -66,24 +66,33 @@ def _save_atomic(obj, path):
     os.replace(tmp, path)
 
 
-def save_gt_cache(data_dir, sampler, d, K, gt, n_eval, T_train, R99, seed, variant="unweighted"):
-    _save_atomic({"gt": gt.detach().cpu(), "n_eval": int(n_eval), "seed": int(seed),
-                  "T_train": int(T_train), "R99": float(R99)},
+def _device_name(X):
+    return torch.cuda.get_device_name(X.device) if X.is_cuda else "cpu"
+
+
+def save_gt_cache(data_dir, sampler, d, K, X, gt, n_eval, T_train, R99, seed, variant="unweighted"):
+    """The eval seeds X themselves with their fates under the learned sampler: evaluation reads
+    both back and never regenerates the points (a regenerated set could differ on another machine)."""
+    _save_atomic({"X": X.detach().cpu(), "gt": gt.detach().cpu(), "n_eval": int(n_eval), "seed": int(seed),
+                  "T_train": int(T_train), "R99": float(R99), "device": _device_name(X)},
                  gt_cache_path(data_dir, sampler, d, K, seed, variant))
 
 
 def load_gt_cache(data_dir, sampler, d, K, n_eval, seed, device, variant="unweighted"):
-    """Cached fate labels on `device` if present and made for (n_eval, seed), else None."""
+    """(eval seeds, their fates) on `device` if cached for (n_eval, seed), else None. Caches
+    without the points (written before they were stored) are misses."""
     p = gt_cache_path(data_dir, sampler, d, K, seed, variant)
     if not os.path.exists(p):
         return None
     try:
-        blob = torch.load(p, map_location=device, weights_only=False)
+        blob = torch.load(p, map_location="cpu", weights_only=False)
     except Exception:
         return None
     if int(blob.get("n_eval", -1)) != int(n_eval) or int(blob.get("seed", -999)) != int(seed):
         return None
-    return blob["gt"].to(device)
+    if blob.get("X") is None or blob["X"].shape != (int(n_eval), int(d)):
+        return None
+    return blob["X"].to(device), blob["gt"].to(device)
 
 
 def _git_commit():
@@ -136,8 +145,9 @@ def _save_cell(cfg, d, K, seed, proc, model, means_t, min_sep, R99, hall, used_s
     _save_atomic(ckpt, path)
     try:
         n_eval = n_eval_for(cfg, K)
-        gt = core.label_fate(proc.sample(model, proc.seeds(n_eval, d, seed + 1)), means_t, R99)
-        save_gt_cache(cfg.paths.checkpoints, sampler, d, K, gt, n_eval, T, R99, seed, variant)
+        X = proc.seeds(n_eval, d, seed + 1)
+        gt = core.label_fate(proc.sample(model, X), means_t, R99)
+        save_gt_cache(cfg.paths.checkpoints, sampler, d, K, X, gt, n_eval, T, R99, seed, variant)
     except Exception as e:                        # evaluate.py recomputes it on a cache miss
         print(f"[train:{sampler}] gt cache skipped d={d} K={K} seed={seed}: {e}")
     return path, converged
