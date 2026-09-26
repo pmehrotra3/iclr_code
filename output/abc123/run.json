@@ -44,20 +44,6 @@
     }
   },
   "process": {
-    "ddim": {
-      "T_train": 500,
-      "name": "ddim",
-      "beta_min": 0.0001,
-      "beta_max": 0.02,
-      "true_order": "heun"
-    },
-    "flow": {
-      "T_train": 500,
-      "name": "flow",
-      "sigma_min": 0.0001,
-      "solver": "euler",
-      "true_solver": "heun"
-    },
     "heun": {
       "T_train": 500,
       "name": "heun",
@@ -146,6 +132,6 @@
       "arch": "polar"
     }
   },
-  "created": "2026-09-24 18:50:59",
-  "updated": "2026-09-24 23:43:21"
+  "created": "2026-09-25 20:40:30",
+  "updated": "2026-09-25 20:40:45"
 }
