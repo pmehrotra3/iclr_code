@@ -1,0 +1,50 @@
+# rank_experiment/config.yaml -- every setting of the rank experiment (rank_sweep.py).
+# Run it with ./rank_experiment/main.sh (see README.md). Paths are relative to the repo root.
+
+grid:                        # one cell per (d, K)
+  d: [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+  K: [2, 4, 8, 16, 32]       # a K that does not fit at some d is skipped (e.g. K = 16 at d = 2)
+
+mixture:                     # the Gaussian mixture of the main experiments
+  sigma: 0.1                 # std of each component
+  radius: 2.0                # centres on the sphere of radius radius * sqrt(d/2)
+  min_sep_mult: 1.5          # centres at least min_sep_mult * 2 * R99 = 3 R99 apart
+  mass_q: 0.99               # R99 holds this mass of one component; a sample outside every
+                             # R99 ball is a hallucination (so about 1 - mass_q is the floor)
+  mode_seed: 0               # placement of the centres
+
+processes: [ddim, flow]      # one folder of tables for each: <out_dir>/ddim, <out_dir>/flow
+
+sampler:                     # the EXACT maps (no trained network), as in the main experiments (code/)
+  T: 500                     # DDIM: noise levels; flow matching: grid points on t in [0, 1]
+  order: heun                # heun (second order) | euler, for both maps
+  ddim:                      # variance-preserving diffusion, linear beta schedule (conf/process/ddim.yaml)
+    beta_min: 1.0e-4         # the map stops at the least noisy level abar_0 = 1 - beta_min, so its
+    beta_max: 0.02           # samples keep noise of std sqrt(beta_min); 1e-3 inflates them enough to
+                             # leave the R99 ball in high d (53% at d = 1024), 1e-4 does not (3%)
+  flow:                      # optimal-transport path, t = 0 noise -> t = 1 data (conf/process/flow.yaml)
+    sigma_min: 1.0e-4
+
+collection:                  # gathering the hallucinating seeds of one cell
+  n_hall: 20000              # hallucinating seeds wanted
+  max_seeds: 4000000         # stop after this many seeds ...
+  max_cell_sec: 1800         # ... or after this many seconds, keeping what was found
+  elem_budget: 25000000      # batch * d per forward pass (lower it if memory runs out)
+  batch_max: 100000
+  batch_min: 2000
+  seed: 12345                # seeds of cell (d, K) come from seed + 1000 d + K
+
+analysis:
+  coords: [euclidean, polar] # both, from the same hallucinating seeds
+  polar_standardize: false   # true: rescale every polar coordinate to unit variance
+
+run:
+  device: auto               # auto (cuda, else Apple mps, else cpu) | cuda | mps | cpu
+  out_dir: rank_experiment/abc      # results of every run, quick or full
+  resume: true               # skip the cells already in the CSVs with n_hall points (so a full
+                             # run redoes the quick cells, and a quick run keeps the full ones).
+                             # After changing any setting except the grid, delete out_dir first.
+
+quick:                       # ./main.sh quick -- replaces the settings above for a short check
+  grid: {d: [2, 4, 8, 16, 32], K: [2, 4, 8]}
+  collection: {n_hall: 2000, max_seeds: 400000, max_cell_sec: 120}

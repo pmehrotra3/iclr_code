@@ -1,3 +1,5 @@
 venv/
 __pycache__/
 *.pyc
+rank_experiment/polar_net_rank/cells/
+rank_experiment/polar_net_rank/slurm/

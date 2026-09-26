@@ -1,0 +1,53 @@
+# rank_experiment/polar_net_rank/config.yaml -- every setting of the polar-network rank experiment
+# (polar_net_rank.py). Run it with ./rank_experiment/polar_net_rank/main.sh (see README.md).
+# Paths are relative to the repo root. The values are those of the main experiments (conf/).
+
+grid:                        # one cell per (d, K)
+  d: [2, 4, 8, 16, 32, 64, 128, 256, 512]
+  K: [2, 4, 8]
+
+processes: [ddim, flow]      # one folder of tables for each: <out_dir>/ddim, <out_dir>/flow
+
+mixture:                     # conf/data/gmm.yaml, unweighted
+  sigma: 0.1                 # std of each component
+  radius: 2.0                # centres on the sphere of radius radius * sqrt(d/2)
+  m_mult: 1.5                # centres at least m_mult * 2 * R99 apart
+  mass_q: 0.99               # R99 holds this mass of one component
+  seed: 0                    # placement of the centres: the first run (seed 0) of the main experiments
+
+process:                     # the EXACT field that pulls points back to noise space (conf/process/)
+  T_true: 500
+  ddim: {beta_min: 1.0e-4, beta_max: 0.02, true_order: heun}
+  flow: {sigma_min: 1.0e-4, solver: euler, true_solver: heun}
+
+polar_net:                   # conf/classifier/base.yaml + polar3.yaml
+  hidden: 256                # r: the number of projections of the first linear layer
+  degree: 3                  # the nonlinearity: the powers z, z^2, z^3
+  epochs: 30
+  batch: 2048
+  lr: 0.003
+  weight_decay: 1.0e-4
+  min_steps: 3000
+  member: 0                  # ensemble member: seeds its initialisation and its batch order
+
+anchors:                     # the training set of the polar network (conf/anchors/base.yaml)
+  budget: 20000              # b: anchors per mode in the R99 ball (the paper's fixed budget)
+  shell_frac: 0.5            # plus shell_frac * b per mode in the band R99 .. R99 + shell_sigma * sigma
+  shell_sigma: 2.0
+  seed: 0
+
+points:                      # the r points: on ONE sphere around one mode, pulled back to noise space
+  mode: 0                    # the mode
+  radius: 1.0                # radius of the sphere in data space, in units of R99
+                             # (the rings of the w-kNN anchors are 0.3, 0.6, 0.9, 1.2 and 1.5)
+  n: null                    # number of points; null = hidden, so that the matrix is r x r
+  seed: 12345                # the points of cell (d, K) come from seed + 1000 d + K
+
+run:
+  device: auto               # auto (cuda, else Apple mps, else cpu) | cuda | mps | cpu
+  out_dir: rank_experiment/polar_net_rank/abc
+  resume: true               # skip the cells already in the CSVs with the same anchor budget
+
+quick:                       # ./main.sh quick -- replaces the settings above for a short check
+  grid: {d: [2, 4, 8, 16, 32], K: [2, 4, 8]}
+  anchors: {budget: 2000}
