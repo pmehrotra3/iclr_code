@@ -7,8 +7,8 @@ Writes, inside this folder:
     tables/<process>_<variant>_a<anchors>.tex         one table per anchor budget, T = 250/500/750
                                                       as sub-columns of each predictor
     figures/<process>_<variant>_T<T>_a<anchors>.pdf   heatmaps: predictor x metric, one per T
-and, next to this folder, presenting_results.tex: setup.tex (the hand-written experimental setup)
-followed by every table and heatmap.
+and, next to this folder, presenting_results.tex: every table and heatmap. The experimental setup
+is not part of it: it is its own document, experimental_setup.tex, also next to this folder.
 Paths in presenting_results.tex start with --prefix: the folder's name in the paper project
 (Overleaf is case-sensitive, so it must match exactly).
 """
@@ -164,6 +164,9 @@ DOC_HEAD = r"""% presenting_results.tex -- every table and heatmap in {prefix}. 
 
 RESULTS_INTRO = r"""
 \section{{Tables: overall accuracy}}
+\noindent The experimental setup, and how these tables and heatmaps are generated, are described in
+the separate document \texttt{{experimental\_setup.tex}}.
+
 \noindent Each table reports overall seed-fate accuracy (\%, mean over {n_seeds} seeds) on the
 $(K, d)$ grid, $d \le {max_d}$, for one anchor budget, with $T = {Ts}$ as sub-columns of each
 predictor; the best predictor at each $T$ is in bold. Heatmaps show overall accuracy, mode F1 and
@@ -208,11 +211,9 @@ def main():
                 figures.append("\\clearpage")
             print(f"[tex] {proc}/{var}: {len(anchors)} tables, {len(anchors) * len(by_T)} heatmaps")
 
-    setup = os.path.join(HERE, "setup.tex")                  # hand-written experimental setup
-    setup = open(setup).read() if os.path.exists(setup) else ""
     fill = dict(n_seeds=n_seeds, max_d=MAX_D, Ts=", ".join(map(str, TS)))
     doc = (DOC_HEAD.format(prefix=args.prefix, folder=os.path.basename(HERE), **fill)
-           + setup + RESULTS_INTRO.format(**fill) + "\n".join(tables)
+           + RESULTS_INTRO.format(**fill) + "\n".join(tables)
            + "\n\n\\section{Heatmaps}\n" + "\n".join(figures) + "\n\\end{document}\n")
     with open(os.path.join(ROOT, "presenting_results.tex"), "w") as f:
         f.write(doc)

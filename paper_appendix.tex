@@ -1,0 +1,627 @@
+% paper_appendix.tex -- the experimental-details appendix, to paste into the paper.
+% Requires: amsmath, amssymb, booktabs, xcolor, listings, tikz
+% (\usetikzlibrary{positioning,arrows.meta,calc}), algorithm. Uses the paper's \pranav and
+% \jeffrey comment macros.
+% Notation follows Secs. 3-5 of the main text: seeds z ~ N(0, I_d), endpoint maps G_star (exact
+% field F_star) and G_theta (learned field F_theta), mixture weights w_i, component scale sigma_0,
+% mode cores C_k = B(mu_k, R99) and pulled-back cores K_k = G^{-1}(C_k).
+% Every algorithm is a Python-style listing in the format of Algorithm 1 (pullback). If the
+% paper already defines a listings style for Algorithm 1, replace `appcode` by its name.
+
+\definecolor{appcodecomment}{RGB}{38,139,150}
+\definecolor{appcodekeyword}{RGB}{0,70,170}
+\definecolor{appcodecall}{RGB}{190,30,130}
+\lstdefinestyle{appcode}{
+  language=Python, basicstyle=\ttfamily\footnotesize, columns=fullflexible, keepspaces=true,
+  commentstyle=\color{appcodecomment}, keywordstyle=\color{appcodekeyword},
+  emphstyle=\color{appcodecall}, showstringspaces=false, aboveskip=2pt, belowskip=0pt,
+  morekeywords={lambda},
+  emph={range, len, max, min, sum, mean, log, exp, sqrt, ceil, norm, cdist, topk, top2, argmax,
+        argmin, where, one_hot, softmax, log_softmax, entropy, concat, triu_indices, quantiles,
+        argmax_over, randn, unit_vectors, pullback, transport, outcome, train, train_field,
+        draw_centres, draw_weights, sample_gmm, hallucination_rate, metrics, hall_f1, AdamW,
+        Linear, cross_entropy, G_theta, G_star, G_star_fit, train_autoencoder, R99_per_cluster,
+        invert, Classifier, fit, predict, kmeans_mixture},
+}
+
+\input{tables/pullback_T_sweep_ddim_flow_combined}
+\input{tables/algos/pullback}
+% tables/algos/boundary_predictors is superseded by Algorithms app-knn .. app-param-train below.
+
+
+\section{Experimental Details}
+\label{app:experimental_details}
+
+This appendix specifies the experiments of Sec.~5, in which pullback is used to predict, before
+sampling, the outcome of every seed: the mode core it reaches or a hallucination. We describe the
+Gaussian-mixture targets and their mode cores (Appendix~\ref{app:details_gmm}), the construction
+of the pullback anchors and the evaluation protocol (Appendix~\ref{app:anchor-class}), the learned
+samplers whose outcomes are predicted (Appendix~\ref{app:details-diffusion}), and the anchor
+classifiers (Appendix~\ref{app:algo-details}). Appendix~\ref{app:mnist} extends the setup to the
+latent spaces of image autoencoders.
+
+
+\subsection{Gaussian Mixture Setup}
+\label{app:details_gmm}
+
+\paragraph{Target distribution.}
+The data distribution is a mixture of $K$ isotropic Gaussians in $\mathbb{R}^d$,
+\begin{equation}
+    p_{\text{data}}(x) = \sum_{i=1}^{K} w_i \, \mathcal{N}(x; \mu_i, \sigma_0^2 I_d), \qquad \sigma_0 = 0.1.
+\end{equation}
+Let $R_{99} = \sigma_0 \sqrt{\chi^2_d(0.99)}$ denote the radius of the ball containing $99\%$ of the
+mass of one component. The centres are drawn on a sphere of radius $2\sqrt{d/2}$ and rejected
+until every pair satisfies $\|\mu_i - \mu_j\| \ge 3R_{99}$. We consider an \emph{unweighted} mixture,
+$w_i = 1/K$, and a \emph{weighted} one, in which $K$ weights drawn from $U[0.3, 0.8]$ and normalised
+are assigned to the modes in a random order in each run. The two variants are separate
+experiments with separately trained models.
+
+\paragraph{Mode cores and outcomes.}
+Following Sec.~4, the critical radius of a converged sample is $R_{99}$, and the mode core of
+component $k$ is $\mathcal{C}_k = B(\mu_k, R_{99})$. The separation above makes the cores
+disjoint. For this mixture the exact field $F_\star$ is available in closed form (Sec.~B), whereas
+a trained network gives the learned field $F_\theta$. Every sampler we consider is deterministic, so
+a seed $z \sim \gamma = \mathcal{N}(0, I_d)$ has a single sample $x = \mathcal{G}(z)$, and we define
+its \emph{outcome}
+\begin{equation}
+    o(z) =
+    \begin{cases}
+        k,  & \mathcal{G}(z) \in \mathcal{C}_k, \\
+        -1, & \mathcal{G}(z) \notin \bigcup_{k} \mathcal{C}_k \quad \text{(hallucination)}.
+    \end{cases}
+\end{equation}
+Equivalently, $o(z) = k$ exactly when $z$ lies in the pulled-back core
+$\mathcal{K}_k = \mathcal{G}^{-1}(\mathcal{C}_k)$, and hallucinating seeds form the band outside
+every $\mathcal{K}_k$. Predicting the outcome from the seed alone is therefore a $(K+1)$-class
+classification problem in seed space, whose decision boundaries are the pulled-back boundaries
+$\partial\mathcal{K}_k$.
+
+
+\subsection{Anchor Classification}
+\label{app:anchor-class}
+
+\paragraph{Pullback anchors.}
+The pulled-back cores have no closed form, so we describe them with \emph{anchors}: seeds whose
+outcome is known because they were obtained by pullback of labelled points in data space
+(Algorithm~1). For a budget of $b$ anchors per mode, we draw $b$ points uniformly in each mode
+core $\mathcal{C}_k$ (label $k$) and $b/2$ points in the hallucination band
+$R_{99} < \|x - \mu_k\| \le R_{99} + 2\sigma_0$ around it (label $-1$). Each point is written as
+$x = \mu_k + \rho\, v$, with a direction $v = g / \|g\|$, $g \sim \mathcal{N}(0, I_d)$, which is
+uniform on the unit sphere, and a radius $\rho$ drawn with $U \sim U[0, 1]$ as
+\begin{equation}
+    \rho = R_{99}\, U^{1/d} \quad \text{(core)}, \qquad
+    \rho = R_{99} + 2\sigma_0\, U \quad \text{(band)}.
+\end{equation}
+The exponent $1/d$ makes the core points uniform in volume. The band points are uniform in radius,
+which keeps them spread across the band in high dimension, where a volume-uniform draw would
+concentrate them at its outer edge. The band points supply hallucination labels directly outside
+the core boundaries, where the pulled-back boundaries $\partial\mathcal{K}_k$ lie.
+
+The labelled points are pulled back to seed space by integrating the exact field $F_\star$ in
+reverse, from $\tau = 0$ to $\tau = 1$, in $T$ steps (Figure~\ref{fig:pipeline}, top). For DDIM,
+each reverse step is a DDIM update whose noise prediction averages the exact $\epsilon$ at both ends
+of the step, a Heun-type correction that makes the pullback second order; the learned DDIM sampler
+itself uses the plain first-order update. For flow matching, the exact velocity field is integrated
+in reverse with Heun's method. Pullback never queries the learned model.
+
+\paragraph{Reference outcomes.}
+The test set consists of $50{,}000 \cdot K$ seeds $z \sim \gamma$, labelled by their outcome under
+the learned endpoint map $\mathcal{G}_\theta$ (Figure~\ref{fig:pipeline}, bottom). The anchors are
+built from $F_\star$ and the reference outcomes from $F_\theta$, so the evaluation measures how well
+the pulled-back cores of the exact field predict the behaviour of the trained sampler. The number
+of pullback steps $T$ affects only the anchors.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    font=\footnotesize, >=Stealth, node distance=4mm and 5mm,
+    blk/.style={draw, rounded corners=2pt, align=center, text width=25mm, inner sep=3pt, minimum height=14mm},
+    top/.style={blk, fill=blue!8}, bot/.style={blk, fill=orange!12},
+    res/.style={blk, fill=green!10, text width=22mm}]
+  \node[top] (a1) {Sample $b$ points per mode core (label $k$), $b/2$ in the band (label $-1$)};
+  \node[top, right=of a1] (a2) {Pullback with the \emph{exact} field $F_\star$, $T$ steps};
+  \node[top, right=of a2] (a3) {Labelled anchors in seed space};
+  \node[top, right=of a3] (a4) {Fit each classifier on the anchors};
+  \node[bot, below=8mm of a1] (g1) {Draw $50{,}000 \cdot K$ test seeds $z \sim \mathcal{N}(0, I_d)$};
+  \node[bot, right=of g1] (g2) {Generate $x = \mathcal{G}_\theta(z)$ with the \emph{learned} sampler, 500 steps};
+  \node[bot, right=of g2] (g3) {Outcome: $k$ if $x \in \mathcal{C}_k$, else $-1$};
+  \node[bot, right=of g3] (g4) {Reference outcomes of the test seeds};
+  \node[res, right=14mm of $(a4.east)!0.5!(g4.east)$] (m) {Compare:\\accuracy,\\mode F1,\\hallucination F1};
+  \draw[->] (a1) -- (a2);
+  \draw[->] (a2) -- (a3);
+  \draw[->] (a3) -- (a4);
+  \draw[->] (g1) -- (g2);
+  \draw[->] (g2) -- (g3);
+  \draw[->] (g3) -- (g4);
+  \draw[->] (a4.east) -| node[pos=0.25, above] {predicted} (m.north);
+  \draw[->] (g4.east) -| node[pos=0.25, below] {reference} (m.south);
+\end{tikzpicture}
+\caption{\textbf{Evaluation protocol.} Top: points in and around each mode core are pulled back to
+seed space with the exact field, and the classifiers are fit on the resulting anchors. Bottom:
+test seeds are labelled by the outcome of the learned sampler. The classifiers are evaluated on the
+same test seeds.}
+\label{fig:pipeline}
+\end{figure}
+
+\paragraph{Metrics.}
+We report the accuracy over the $K + 1$ outcome classes, the F1 score macro-averaged over the $K$
+mode classes, and the F1 score of the hallucination class. Hallucinations are rare (about $1\%$ of
+seeds, Table~S1), so accuracy is dominated by seeds inside the pulled-back cores, and hallucination
+F1 is the relevant measure of how well the hallucination band is recovered. All results are means
+over three runs, each with independent centres, network initialisation and test seeds.
+
+\paragraph{Protocol.}
+An experiment is specified by the sampler, the mixture variant, $K$, $d$, the number of pullback
+steps $T$ and the anchor budget $b$. Algorithm~\ref{alg:app-protocol} gives the procedure for one
+configuration, and Table~\ref{tab:app-grid} lists every configuration we evaluate; the values of
+the constants in the algorithms are given in Tables~\ref{tab:app-grid}, \ref{tab:app-scorenet}
+and~\ref{tab:app-classifiers}. The learned
+field and the reference outcomes depend on neither $T$ nor $b$, so they are shared across both. In the result tables, each row is a pair $(K, d)$, and
+each classifier has one sub-column per value of $T$; the heatmaps show the three metrics over the
+$(K, d)$ grid, one panel per classifier and metric.
+
+\begin{algorithm}[htbp]
+\caption{Evaluation protocol for one configuration (sampler, mixture variant, $K$, $d$, $T$, $b$).}
+\label{alg:app-protocol}
+\begin{lstlisting}[style=appcode]
+# mu[0..K-1] : mode centres, R99 : mode-core radius, gap : minimum centre separation
+# F_star / F_theta : exact / learned field, G_star / G_theta : their endpoint maps
+# T : pullback steps, n, m : core and band anchors per mode, w : band width
+# N_train : training samples, N_test : test seeds per mode, n_runs : runs
+# eta_max : retraining threshold on the hallucination rate, s_re : retraining step factor
+
+def outcome(x, mu, R99):                          # k if x in C_k, -1 = hallucination
+    D = cdist(x, mu)
+    return where(min(D, axis=1) <= R99, argmin(D, axis=1), -1)
+
+for run in range(n_runs):
+    mu, w_mix = draw_centres(K, d, gap), draw_weights(K)
+    F_theta   = train_field(sample_gmm(mu, w_mix, N_train))
+    if hallucination_rate(F_theta) > eta_max:
+        F_theta = train_field(sample_gmm(mu, w_mix, N_train), steps_factor=s_re)
+
+    z     = randn(N_test * K, d)                  # test seeds
+    o_ref = outcome(G_theta(z), mu, R99)          # reference outcomes
+
+    Z, y  = pullback(mu, R99, n, m, w, F_star, T) # Alg. 1
+    for clf in classifiers:
+        o_hat = clf.fit(Z, y).predict(z)
+        scores[run, clf] = metrics(o_hat, o_ref)  # accuracy, mode F1, hallucination F1
+
+return mean(scores, axis=0)
+\end{lstlisting}
+\end{algorithm}
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{\textbf{Experiment grid for the Gaussian mixtures.}}
+\label{tab:app-grid}
+\begin{tabular}{ll}
+\toprule
+Sampler                         & DDIM, flow matching; Heun, RK45, DPM-Solver++(2M) (DDIM network) \\
+Mixture weights $w_i$           & uniform; random (drawn from $U[0.3, 0.8]$, normalised) \\
+Number of modes $K$             & 2, 4, 8, 16 \\
+Dimension $d$                   & 2, 4, 8, 16, 32, 64, 128, 256 ($K = 16$, $d = 2$ not run) \\
+Pullback steps $T$              & 250, 500, 750 \\
+Core anchors per mode $n = b$   & 2{,}000, 5{,}000, 10{,}000, 15{,}000, 20{,}000 \\
+Band anchors per mode $m$       & $b/2$ \\
+Band width $w$                  & $2\sigma_0$ \\
+Minimum centre separation       & $3R_{99}$ \\
+Test seeds per mode $N_{\text{test}}$ & 50{,}000 (100{,}000 to 800{,}000 in total) \\
+Calibration seeds $n_{\text{cal}}$ & 5{,}000 (weighted kNN only) \\
+Runs $n_{\text{runs}}$          & 3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\subsection{Diffusion Model on GMM}
+\label{app:details-diffusion}
+
+\paragraph{Samplers.}
+We consider two generative processes, and three further solvers for one of them. All samplers are
+deterministic instances of Eq.~(1), so each seed has a single outcome.
+
+\textit{DDIM.} A variance-preserving diffusion,
+$x_t = \sqrt{\bar\alpha_t}\, x_0 + \sqrt{1 - \bar\alpha_t}\, \epsilon$, with a linear schedule
+$\beta_t \in [10^{-4}, 0.02]$ over 500 steps. The network is trained with the standard
+$\epsilon$-prediction objective and sampled with the deterministic DDIM update, i.e.\ the Euler
+discretisation of the probability-flow ODE (Song et al., 2021a;b).
+
+\textit{Flow matching.} The optimal-transport conditional path of Lipman et al.~(2023),
+$x_\tau = (1 - (1 - \sigma_{\min})\,\tau)\, z + \tau\, x$ with $z \sim \mathcal{N}(0, I_d)$ and
+$\sigma_{\min} = 10^{-4}$. The network regresses the conditional velocity and is sampled with 500
+Euler steps. As in Sec.~3.1, we write $z$ for the seed and $x = \mathcal{G}_\theta(z)$ for the
+sample of both processes.
+
+\textit{Heun, RK45 and DPM-Solver++(2M).} The trained DDIM network, integrated on the same
+500-step grid with a different solver: Heun's method (second order, 2 network evaluations per
+step), fixed-step Dormand--Prince RK45 (fifth order, 6 evaluations per step) and DPM-Solver++(2M)
+(Lu et al., 2022; second-order multistep, 1 evaluation per step). These samplers are not retrained:
+they share the DDIM network and anchors, and differ from DDIM only in the reference outcomes. They
+therefore isolate the effect of the discretisation on the pulled-back cores.
+
+\paragraph{Network.}
+All learned fields use the residual MLP of Figure~\ref{fig:app-scorenet}: four pre-LayerNorm
+residual blocks with LeakyReLU(0.2) activations and a sinusoidal time embedding. The width is 256
+for $d \le 64$ and 1024 for $d \ge 128$. Models are trained with a mean-squared-error objective
+using Adam and an exponential moving average of the weights (Table~\ref{tab:app-scorenet}). A
+model whose hallucination rate on $10^4$ probe seeds exceeds $1.5\%$ is retrained once with
+$1.7\times$ the number of steps.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    font=\small, >=Stealth, node distance=4mm and 5mm,
+    blk/.style={draw, rounded corners=2pt, fill=gray!8, align=center, inner sep=3pt, minimum height=8mm},
+    sum/.style={draw, circle, inner sep=0pt, minimum size=4.5mm}]
+  \node (x) {$x \in \mathbb{R}^d$};
+  \node[blk, right=of x] (lin) {Linear\\$d \to h$};
+  \node[sum, right=of lin] (plus) {$+$};
+  \node[blk, right=of plus, fill=blue!8] (res) {Residual block\\$\times 4$};
+  \node[blk, right=of res] (head) {LayerNorm, $\phi$,\\Linear $h \to d$};
+  \node[right=of head, align=center] (out) {noise (DDIM)\\or velocity (flow)};
+  \node[below=9mm of x] (t) {$t$};
+  \node[blk, right=of t] (emb) {Sinusoidal\\embedding, 128};
+  \node[blk, right=of emb] (tm) {Linear $128 \to h$,\\$\phi$};
+  \draw[->] (x) -- (lin);
+  \draw[->] (lin) -- (plus);
+  \draw[->] (plus) -- (res);
+  \draw[->] (res) -- (head);
+  \draw[->] (head) -- (out);
+  \draw[->] (t) -- (emb);
+  \draw[->] (emb) -- (tm);
+  \draw[->] (tm.east) -| (plus.south);
+\end{tikzpicture}
+
+\vspace{5mm}
+\begin{tikzpicture}[
+    font=\small, >=Stealth, node distance=5mm,
+    blk/.style={draw, rounded corners=2pt, fill=blue!8, align=center, inner sep=3pt, minimum height=7mm},
+    sum/.style={draw, circle, inner sep=0pt, minimum size=4.5mm}]
+  \node (in) {$h$};
+  \node[blk, right=of in] (ln) {LayerNorm};
+  \node[blk, right=of ln] (a1) {$\phi$};
+  \node[blk, right=of a1] (w1) {Linear $h \to h$};
+  \node[blk, right=of w1] (a2) {$\phi$};
+  \node[blk, right=of a2] (w2) {Linear $h \to h$};
+  \node[sum, right=of w2] (plus) {$+$};
+  \node[right=of plus] (o) {$h'$};
+  \draw[->] (in) -- (ln);
+  \draw[->] (ln) -- (a1);
+  \draw[->] (a1) -- (w1);
+  \draw[->] (w1) -- (a2);
+  \draw[->] (a2) -- (w2);
+  \draw[->] (w2) -- (plus);
+  \draw[->] (plus) -- (o);
+  \draw[->] ($(in.east)+(1mm,0)$) -- ++(0,8mm) -| node[pos=0.25, above] {skip connection} (plus.north);
+\end{tikzpicture}
+\caption{\textbf{Network of the learned field $F_\theta$.} Top: full network with hidden width $h$.
+Bottom: residual block. $\phi$ denotes LeakyReLU(0.2).}
+\label{fig:app-scorenet}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{\textbf{Learned field: architecture and training.}}
+\label{tab:app-scorenet}
+\begin{tabular}{ll}
+\toprule
+Hidden width                  & 256 for $d \le 64$; 1024 for $d \ge 128$ \\
+Residual blocks               & 4 \\
+Time embedding                & sinusoidal, dimension 128 \\
+Activation                    & LeakyReLU(0.2) \\
+Output                        & noise (DDIM) or velocity (flow matching) \\
+\midrule
+Training set $N_{\text{train}}$ & $10^5$ samples from $p_{\text{data}}$ \\
+Optimiser                     & Adam, learning rate $10^{-3}$, cosine decay to $10^{-5}$ \\
+Batch size                    & 512 \\
+Gradient clipping             & norm 1 \\
+Weight EMA                    & decay 0.999 \\
+Training steps                & $30{,}000\,(1 + d/16)(1 + K/16)$ \\
+Retraining                    & once, with $s_{\text{re}} = 1.7\times$ the steps, if hallucination rate $> \eta_{\max} = 1.5\%$ \\
+Sampling steps                & 500 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\subsection{Algorithm Details}
+\label{app:algo-details}
+
+We compare four classifiers that map a seed to one of the $K + 1$ outcomes, given in
+Algorithms~\ref{alg:app-knn}--\ref{alg:app-param-train} and configured as in
+Table~\ref{tab:app-classifiers}. kNN, the quadratic classifier and the polar classifier are fit on
+the core and band anchors of Appendix~\ref{app:anchor-class}. Weighted kNN (w-kNN) builds its own
+anchors from the mode cores only and detects hallucinations by low confidence. The quadratic and
+polar classifiers differ only in their logits (Algorithms~\ref{alg:app-quadratic}
+and~\ref{alg:app-polar}); both are trained with cross-entropy over the $K + 1$ classes, as
+ensembles of three models whose log-probabilities are summed (Algorithm~\ref{alg:app-param-train}).
+
+\begin{algorithm}[htbp]
+\caption{kNN: seed $\to$ outcome.}
+\label{alg:app-knn}
+\begin{lstlisting}[style=appcode]
+# Z, y : pulled-back anchors, labels in {-1, 0..K-1};  z : test seeds
+# k : neighbours, eps : numerical floor
+Y     = one_hot(y + 1, K + 1)                     # column 0 = hallucination
+idx   = topk(cdist(z, Z), k, largest=False)       # k nearest anchors
+lp    = log(mean(Y[idx], axis=1) + eps)           # log vote shares
+m     = lp[:, 0] - max(lp[:, 1:], axis=1)         # hallucination margin
+o_hat = where(m > 0, -1, argmax(lp[:, 1:], axis=1))
+\end{lstlisting}
+\end{algorithm}
+
+\begin{algorithm}[htbp]
+\caption{Weighted kNN (w-kNN) over mode-only anchors: seed $\to$ outcome.}
+\label{alg:app-altered}
+\begin{lstlisting}[style=appcode]
+# mu, R99, F_star, T : as in Alg. 1;  z : test seeds
+# n : anchors per mode, S : spheres per mode, r_max : largest sphere radius (in R99)
+# w_min : weight of the outermost sphere, k : neighbours, temp : softmax temperature
+# n_cal : calibration seeds, [q_lo, q_hi], n_q : quantile range and count for the threshold
+P, y, om = [], [], []
+for c in range(K):
+    for j in range(1, S + 1):
+        P  += [mu[c] + (j / S) * r_max * R99 * unit_vectors(n // S, d)]
+        y  += [c]
+        om += [1 - (1 - w_min) * j / S]           # linear decay to w_min
+Za = transport(P, F_star, T)                      # pullback step of Alg. 1
+
+def vote(z):
+    idx  = topk(cdist(z, Za), k, largest=False)
+    s    = sum(om[idx] * one_hot(y[idx], K), 1) / sum(om[idx], 1)
+    p    = softmax(s / temp)
+    conf = 1 - entropy(p) / log(K)
+    return p, conf
+
+# calibration on seeds labelled by the exact endpoint map
+z_cal = randn(n_cal, d)
+o_cal = outcome(G_star(z_cal), mu, R99)
+_, c  = vote(z_cal)
+theta = argmax_over(quantiles(c, q_lo .. q_hi, n_q),
+                    lambda th: hall_f1(c < th, o_cal == -1))
+
+p, conf = vote(z)
+o_hat   = where(conf < theta, -1, argmax(p, axis=1))
+\end{lstlisting}
+\end{algorithm}
+
+\begin{algorithm}[htbp]
+\caption{Quadratic classifier: logits of a seed.}
+\label{alg:app-quadratic}
+\begin{lstlisting}[style=appcode]
+# z : seeds (N, d);  output : K + 1 logits
+def forward(z):
+    iu  = triu_indices(d, d)                      # pairs i <= j
+    psi = concat([z, z[:, iu[0]] * z[:, iu[1]]])  # d + d(d+1)/2 features
+    return Linear[d + d * (d + 1) // 2 -> K + 1](psi)   # column 0 = hallucination
+\end{lstlisting}
+\end{algorithm}
+
+\begin{algorithm}[htbp]
+\caption{Polar classifier: logits of a seed.}
+\label{alg:app-polar}
+\begin{lstlisting}[style=appcode]
+# z : seeds (N, d);  h : hidden size, p : polynomial degree;  output : K + 1 logits
+def forward(z):
+    r0  = sqrt(d)                                 # typical seed radius
+    r   = norm(z, axis=1, keepdims=True)
+    rs  = r - r0                                  # radial offset
+    u   = z / r                                   # direction
+    q   = Linear[d + 1 -> h]([u * sqrt(r0), rs]) / sqrt(r0 + 1)
+
+    phi = concat([q ** i for i in range(1, p + 1)])
+    l   = Linear[p * h -> K](phi)                 # mode logits
+
+    t1, t2 = top2(l)
+    l_h = c + a * rs - exp(log_beta) * (t1 - t2)  # hallucination logit
+    return concat([l_h, l])
+\end{lstlisting}
+\end{algorithm}
+
+\begin{algorithm}[htbp]
+\caption{Training and prediction of the quadratic and polar classifiers.}
+\label{alg:app-param-train}
+\begin{lstlisting}[style=appcode]
+# Z, y : pulled-back anchors;  arch in {quadratic, polar};  z : test seeds
+# E : ensemble size, B : batch size, lr, wd : learning rate and weight decay
+# e_min, s_min : minimum epochs and minimum optimiser steps
+nets = []
+for e in range(E):
+    net    = Classifier(d, K, arch, seed=e)
+    epochs = max(e_min, ceil(s_min / (len(Z) // B)))
+    train(net, Z, y + 1, loss=cross_entropy, epochs=epochs, batch=B,
+          opt=AdamW(lr=lr, weight_decay=wd), sched="one-cycle")
+    nets += [net]
+
+lp    = sum(log_softmax(net(z)) for net in nets)
+m     = lp[:, 0] - max(lp[:, 1:], axis=1)         # hallucination margin
+o_hat = where(m > 0, -1, argmax(lp[:, 1:], axis=1))
+\end{lstlisting}
+\end{algorithm}
+
+The polar classifier uses the fact that $\|z\|$ concentrates around $\sqrt{d}$ for $z \sim \mathcal{N}(0, I_d)$,
+so the outcome depends mainly on the direction $u$. Its hallucination logit grows as the two
+largest mode logits approach each other, so hallucinations are predicted between two pulled-back
+cores, in a band whose width depends on the radius. This matches the geometry of Sec.~3.3, where
+the class boundaries arise from the contact of neighbouring cores.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{\textbf{Classifier settings.}}
+\label{tab:app-classifiers}
+\begin{tabular}{lll}
+\toprule
+Classifier & Setting & Value \\
+\midrule
+kNN            & neighbours $k$                & 10 \\
+               & numerical floor $\varepsilon$ & $10^{-9}$ \\
+\midrule
+Weighted kNN   & neighbours $k$                & 10 \\
+               & spheres per mode $S$          & 5, radius $0.3R_{99}$ to $r_{\max} R_{99} = 1.5R_{99}$ \\
+               & anchor weights                & 0.84 to $w_{\min} = 0.2$, linear in the radius \\
+               & softmax temperature           & 0.1 \\
+               & threshold $\theta$            & best hallucination F1 on $n_{\text{cal}} = 5{,}000$ seeds \\
+               & threshold candidates          & $n_q = 100$ quantiles in $[q_{\text{lo}}, q_{\text{hi}}] = [0.5\%, 50\%]$ \\
+\midrule
+Quadratic      & features                      & $z_i$ and $z_i z_j$, $i \le j$ \\
+\midrule
+Polar          & hidden size $h$, degree $p$   & 256, 3 \\
+\midrule
+Quadratic and  & optimiser                     & AdamW, learning rate $lr = 3 \times 10^{-3}$, one-cycle \\
+polar          & weight decay $wd$, batch size $B$ & $10^{-4}$, 2{,}048 \\
+               & epochs                        & $e_{\min} = 30$, at least $s_{\min} = 3{,}000$ steps \\
+               & ensemble size $E$             & 3 models \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\section{Additional Experiments}
+\label{app:additional_experiments}
+
+
+\subsection{Hallucination Mitigation Table (for all d, K)}
+\label{app:hall-mitigation}
+
+\input{tables/mitigation_table}
+
+\paragraph{Mitigation Strength and Hallucination Reduction}
+\jeffrey{A comparison between strength of mitigation and hallucination reduction in flow matching and DDIM}
+
+\paragraph{Flow Matching vs DDIM}
+\jeffrey{Flow matching should work under smaller mitigation strength compared to DDIM}
+
+\paragraph{Trajectory Divergence from Original with time}
+\jeffrey{Showing that thevend of t}
+
+
+\subsection{Additional MNIST Results}
+\label{app:mnist}
+
+We test whether pullback predicts outcomes on real data, whose distribution is only approximately
+a Gaussian mixture (Sec.~5.3). We train an autoencoder whose latent space is shaped to resemble the
+mixtures of Appendix~\ref{app:details_gmm}, run a latent diffusion model in that space, and predict
+the outcome of its seeds as before, on MNIST, Fashion-MNIST and CIFAR-10.
+
+\paragraph{Latent space.}
+Each dataset has $K = 10$ classes, and the latent dimension is $d = 32$. We train a convolutional
+autoencoder with encoder $E$ and decoder $D_{\text{dec}}$. The encoder sees only images, but the
+loss uses class labels to impose the geometry of Appendix~\ref{app:details_gmm} on the latents
+$x = E(\text{image})$:
+\begin{equation}
+\begin{aligned}
+    \mathcal{L} = \; & \|\text{image} - D_{\text{dec}}(x + \xi)\|^2
+    + \lambda_{\text{sep}}\, \mathbb{E}_{y_a \ne y_b} \max\!\Bigl(0, \tfrac{D_{\text{sep}} - \|x_a - x_b\|}{\sigma_0}\Bigr)^{2} \\
+    & + \frac{\lambda_{\text{cov}}}{K} \sum_{c} \Bigl\| \tfrac{\mathrm{Cov}_c(x)}{\sigma_0^2} - I_d \Bigr\|_F^2
+    + \frac{\lambda_{\text{norm}}}{K} \sum_{c} \max\!\Bigl(0, \tfrac{\|m_c\| - R}{\sigma_0}\Bigr)^{2},
+\end{aligned}
+\end{equation}
+where $\xi \sim \mathcal{N}(0, (0.15\,\sigma_0)^2 I_d)$, $\mathrm{Cov}_c$ and $m_c$ are the latent
+covariance and mean of class $c$, and $\lambda_{\text{sep}} = 5$, $\lambda_{\text{cov}} = 2$ and
+$\lambda_{\text{norm}} = 1$. The constants are those of the Gaussian mixtures: $\sigma_0 = 0.1$,
+$R = 2\sqrt{d/2}$ and $D_{\text{sep}} = 3R_{99}$. The terms ask for latents of different classes to
+be at least $D_{\text{sep}}$ apart, for each class to have covariance $\sigma_0^2 I_d$, and for the
+class means to lie within radius $R$; the means themselves are not prescribed. Fashion-MNIST and
+CIFAR-10 are trained with random flips and shifts, so that test images also fall inside their
+clusters.
+
+\paragraph{Fitted mixture and mode cores.}
+The latent distribution is only approximately Gaussian, so we fit a mixture to the encoded training
+set without labels: $k$-means with $K = 10$ gives the centres $\hat\mu_i$, the relative cluster
+sizes give the weights $\hat w_i$, and the pooled within-cluster variance gives $\hat\sigma_0^2$.
+$R_{99}$ is computed per cluster, and the largest value is used throughout. Labels are used only
+afterwards, to name each cluster by its majority class. Because the latents do not fill the fitted
+balls exactly, the mode cores are enlarged to $\hat{\mathcal{C}}_k = B(\hat\mu_k, 1.25\,R_{99})$:
+the outcome of a seed is $k$ if its sample lies in $\hat{\mathcal{C}}_k$, and $-1$ otherwise. A
+\emph{hallucination} is therefore a latent sample outside every enlarged core.
+
+\paragraph{Diffusion model.}
+We use DDIM with 200 steps and the network of Figure~\ref{fig:app-scorenet} (width 256), trained
+on the encoded training images rather than on samples of the fitted mixture. We deliberately train
+it for a tenth of the budget of Appendix~\ref{app:details-diffusion},
+$3{,}000\,(1 + d/16)(1 + K/16)$ steps, without retraining: a fully trained model hallucinates on
+about $0.3\%$ of seeds, too few to evaluate detection. The hallucinations of this model are mostly
+near misses, whose samples land just outside a core.
+
+\paragraph{Anchors, reference outcomes and evaluation.}
+Anchors are sampled as in Appendix~\ref{app:anchor-class}, with $b$ points in each enlarged core
+and $b/2$ in the surrounding band of width $2\hat\sigma_0$. Unlike the Gaussian mixtures, the exact
+field of the data is unknown, so the anchors are pulled back by inverting the \emph{learned} DDIM
+sampler, with two fixed-point iterations per step, so that sampling from an anchor seed returns the
+anchor exactly; the w-kNN threshold is calibrated on seeds labelled by the same model. The test set
+consists of $100{,}000$ seeds, labelled by their outcome under $\mathcal{G}_\theta$. The classifiers
+and metrics are those of Appendices~\ref{app:anchor-class} and~\ref{app:algo-details}. We add one
+baseline, the \emph{exact field of the fitted mixture}: each test seed is mapped with
+$\hat{\mathcal{G}}_\star$, and its outcome is compared with that under $\mathcal{G}_\theta$. As an
+independent check, a CNN classifier trained on each dataset reads the decoded samples, to verify
+that a sample in core $\hat{\mathcal{C}}_k$ decodes to an image of the class of cluster $k$.
+Algorithm~\ref{alg:app-mnist} summarises the procedure and Table~\ref{tab:app-mnist} gives the
+values of its constants.
+
+\paragraph{Decoded samples.}
+To show what the predicted seed regions look like, we draw $10{,}000$ fresh seeds, fit each
+classifier on the anchors at the largest budget, and predict the outcome of every seed. For each
+predicted class, we run the learned sampler on the first 10 seeds whose sample clearly belongs to
+it and decode the sample with $D_{\text{dec}}$: a cluster's samples must lie within $0.7\,R_{99}$ of
+its centre, and a hallucination's beyond $1.25\,R_{99}$ from every centre. For each classifier we
+also report the precision and recall of its hallucination predictions on these seeds, and the
+distance of the flagged samples to their nearest cluster centre.
+
+\pranav{A visual demonstration of samples which are hallucinations the definition of hallucinations and their corresponding generations.}
+
+\begin{algorithm}[htbp]
+\caption{Evaluation protocol in image latent spaces, for one dataset and anchor budget $b$.}
+\label{alg:app-mnist}
+\begin{lstlisting}[style=appcode]
+# images, labels : one dataset with K classes;  d : latent dimension
+# kappa : core enlargement, n, m : core and band anchors per mode, n_fp : fixed-point iterations
+# S_train : training steps of the learned field, N_test : test seeds, n_runs : runs
+
+for run in range(n_runs):
+    E, Dec    = train_autoencoder(images, labels, d)    # loss L above
+    X         = E(images)                               # latent training set
+    mu, w, s0 = kmeans_mixture(X, K)                    # fitted mixture, no labels
+    R         = kappa * max(R99_per_cluster(X, mu))     # enlarged mode-core radius
+    F_theta   = train_field(X, steps=S_train)
+
+    z      = randn(N_test, d)                           # test seeds
+    o_ref  = outcome(G_theta(z), mu, R)                 # reference outcomes
+    o_base = outcome(G_star_fit(z), mu, R)              # exact field of the fitted mixture
+    scores[run, "exact"] = metrics(o_base, o_ref)
+
+    Z, y = pullback(mu, R, n, m, 2 * s0, invert(G_theta, n_fp))
+    for clf in classifiers:
+        o_hat = clf.fit(Z, y).predict(z)
+        scores[run, clf] = metrics(o_hat, o_ref)
+
+return mean(scores, axis=0)
+\end{lstlisting}
+\end{algorithm}
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{\textbf{Settings in image latent spaces.}}
+\label{tab:app-mnist}
+\begin{tabular}{ll}
+\toprule
+Datasets                        & MNIST, Fashion-MNIST, CIFAR-10 ($K = 10$ classes each) \\
+Latent dimension $d$            & 32 \\
+Autoencoder                     & convolutional; 300 epochs; flips and shifts for Fashion-MNIST, CIFAR-10 \\
+Fitted mixture                  & $k$-means, $K = 10$; pooled $\hat\sigma_0$; weights from cluster sizes \\
+Mode-core radius                & $\kappa R_{99}$, $\kappa = 1.25$ \\
+Sampler                         & DDIM, 200 steps \\
+Network training $S_{\text{train}}$ & $3{,}000\,(1 + d/16)(1 + K/16)$ steps, no retraining \\
+Pullback                        & inversion of the learned sampler, $n_{\text{fp}} = 2$ fixed-point iterations per step \\
+Anchors per mode $b$            & 10{,}000, 50{,}000, 100{,}000 \\
+Test seeds $N_{\text{test}}$     & 100{,}000 \\
+Calibration seeds $n_{\text{cal}}$ & 5{,}000, labelled by the learned sampler \\
+Runs $n_{\text{runs}}$          & 3 \\
+\bottomrule
+\end{tabular}
+\end{table}
