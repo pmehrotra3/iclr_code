@@ -3,11 +3,11 @@
 \centering
 \footnotesize
 \setlength{\tabcolsep}{3pt}
-\caption{\textbf{Weighted DPM-Solver++(2M), 2{,}000 anchors per mode.} Overall seed-fate accuracy (\%, mean over 3 seeds) at $T = 250, 500, 750$ (sub-columns); best predictor per $T$ in bold.}
+\caption{\textbf{Weighted DPM-Solver++(2M), 2{,}000 anchors per mode.} Overall outcome accuracy (\%, mean over 3 runs) at $T = 250, 500, 750$ (sub-columns); best predictor per $T$ in bold.}
 \label{tab:dpmpp2m_weighted_a2000}
 \begin{tabular}{rrcccccccccccc}
 \toprule
- & & \multicolumn{3}{c}{$k$NN} & \multicolumn{3}{c}{altered $k$NN} & \multicolumn{3}{c}{quadratic} & \multicolumn{3}{c}{polar} \\
+ & & \multicolumn{3}{c}{$k$NN} & \multicolumn{3}{c}{w-$k$NN} & \multicolumn{3}{c}{quadratic} & \multicolumn{3}{c}{polar} \\
 \cmidrule(lr){3-5} \cmidrule(lr){6-8} \cmidrule(lr){9-11} \cmidrule(lr){12-14}
 $K$ & $d$ & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 750 \\
 \midrule
@@ -19,6 +19,7 @@ $K$ & $d$ & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 75
 2 & 64 & 78.9 & 70.2 & 69.2 & 62.7 & 78.8 & 72.3 & 37.7 & 61.9 & 66.0 & \textbf{84.6} & \textbf{93.8} & \textbf{94.4} \\
 2 & 128 & \textbf{81.2} & 68.1 & 65.3 & 53.7 & 78.0 & 67.2 & 30.6 & 39.7 & 41.1 & 72.9 & \textbf{92.4} & \textbf{93.1} \\
 2 & 256 & \textbf{81.5} & 66.1 & 61.5 & 55.2 & 61.0 & 54.4 & 24.6 & 37.1 & 38.4 & 57.4 & \textbf{90.0} & \textbf{91.2} \\
+2 & 512 & \textbf{82.5} & 65.5 & 58.1 & 57.2 & 60.1 & 62.2 & 21.8 & 35.5 & 37.0 & 42.4 & \textbf{86.2} & \textbf{87.2} \\
 \midrule
 4 & 2 & 91.5 & 97.6 & 96.3 & 90.8 & 95.7 & 95.5 & 89.3 & 93.0 & 93.0 & \textbf{91.9} & \textbf{98.1} & \textbf{96.5} \\
 4 & 4 & 82.5 & 83.9 & 83.7 & 82.7 & 84.9 & 86.9 & 88.1 & 93.0 & 92.5 & \textbf{90.3} & \textbf{97.5} & \textbf{96.1} \\
@@ -28,6 +29,7 @@ $K$ & $d$ & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 75
 4 & 64 & 63.1 & 51.2 & 50.4 & 65.8 & 74.3 & 72.2 & 41.2 & 70.9 & 73.5 & \textbf{83.5} & \textbf{91.4} & \textbf{91.5} \\
 4 & 128 & 66.2 & 47.0 & 44.7 & 50.9 & 66.4 & 56.8 & 20.5 & 29.4 & 31.1 & \textbf{69.2} & \textbf{89.9} & \textbf{90.9} \\
 4 & 256 & \textbf{68.8} & 44.4 & 39.8 & 51.2 & 56.5 & 52.9 & 14.9 & 21.6 & 21.5 & 50.4 & \textbf{85.5} & \textbf{87.8} \\
+4 & 512 & \textbf{70.2} & 42.9 & 35.6 & 51.5 & 60.9 & 44.7 & 13.2 & 14.9 & 14.4 & 34.9 & \textbf{78.6} & \textbf{84.2} \\
 \midrule
 8 & 2 & 93.9 & \textbf{96.7} & \textbf{96.1} & 93.1 & 95.7 & 94.9 & 80.1 & 81.6 & 81.9 & \textbf{94.2} & 96.6 & \textbf{96.1} \\
 8 & 4 & 77.7 & 78.8 & 78.5 & 79.6 & 86.1 & 85.4 & 85.4 & 89.4 & 89.2 & \textbf{89.2} & \textbf{96.0} & \textbf{94.8} \\
@@ -37,6 +39,7 @@ $K$ & $d$ & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 75
 8 & 64 & 48.7 & 36.6 & 35.9 & 74.0 & 62.4 & 63.3 & 46.7 & 70.3 & 72.0 & \textbf{85.2} & \textbf{89.9} & \textbf{89.5} \\
 8 & 128 & 52.5 & 32.0 & 30.3 & 56.3 & 57.4 & 52.8 & 15.4 & 29.8 & 32.8 & \textbf{68.4} & \textbf{87.8} & \textbf{88.5} \\
 8 & 256 & \textbf{55.9} & 28.5 & 25.3 & 51.1 & 50.1 & 40.6 & 9.7 & 16.9 & 16.8 & 46.7 & \textbf{83.6} & \textbf{86.7} \\
+8 & 512 & \textbf{58.4} & 26.8 & 21.4 & 50.7 & 48.8 & 30.1 & 8.4 & 9.0 & 7.8 & 31.6 & \textbf{76.8} & \textbf{82.1} \\
 \midrule
 16 & 2 & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
 16 & 4 & 76.4 & 76.8 & 76.7 & 83.5 & 82.8 & 83.0 & 86.4 & 87.5 & 87.5 & \textbf{92.6} & \textbf{94.7} & \textbf{94.2} \\
@@ -46,6 +49,7 @@ $K$ & $d$ & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 75
 16 & 64 & 36.1 & 26.2 & 25.9 & 71.4 & 62.1 & 61.3 & 50.1 & 68.9 & 70.2 & \textbf{85.7} & \textbf{88.8} & \textbf{88.5} \\
 16 & 128 & 39.7 & 21.3 & 20.4 & 52.0 & 48.1 & 50.5 & 12.3 & 34.2 & 37.7 & \textbf{69.4} & \textbf{85.9} & \textbf{86.0} \\
 16 & 256 & 44.0 & 17.9 & 16.1 & \textbf{50.4} & 44.0 & 34.1 & 5.9 & 15.6 & 16.2 & 44.8 & \textbf{81.3} & \textbf{83.3} \\
+16 & 512 & 47.0 & 16.0 & 12.9 & \textbf{51.4} & 41.9 & 24.0 & 5.0 & 6.5 & 5.9 & 28.8 & \textbf{72.7} & \textbf{78.5} \\
 \bottomrule
 \end{tabular}
 \end{table}

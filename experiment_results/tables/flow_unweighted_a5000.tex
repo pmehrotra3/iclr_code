@@ -3,11 +3,11 @@
 \centering
 \footnotesize
 \setlength{\tabcolsep}{3pt}
-\caption{\textbf{Unweighted Flow matching, 5{,}000 anchors per mode.} Overall seed-fate accuracy (\%, mean over 3 seeds) at $T = 250, 500, 750$ (sub-columns); best predictor per $T$ in bold.}
+\caption{\textbf{Unweighted Flow matching, 5{,}000 anchors per mode.} Overall outcome accuracy (\%, mean over 3 runs) at $T = 250, 500, 750$ (sub-columns); best predictor per $T$ in bold.}
 \label{tab:flow_unweighted_a5000}
 \begin{tabular}{rrcccccccccccc}
 \toprule
- & & \multicolumn{3}{c}{$k$NN} & \multicolumn{3}{c}{altered $k$NN} & \multicolumn{3}{c}{quadratic} & \multicolumn{3}{c}{polar} \\
+ & & \multicolumn{3}{c}{$k$NN} & \multicolumn{3}{c}{w-$k$NN} & \multicolumn{3}{c}{quadratic} & \multicolumn{3}{c}{polar} \\
 \cmidrule(lr){3-5} \cmidrule(lr){6-8} \cmidrule(lr){9-11} \cmidrule(lr){12-14}
 $K$ & $d$ & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 750 \\
 \midrule
@@ -19,6 +19,7 @@ $K$ & $d$ & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 75
 2 & 64 & 71.2 & 71.2 & 71.2 & 78.2 & 78.2 & 78.2 & 93.4 & 93.3 & 93.3 & \textbf{97.3} & \textbf{97.4} & \textbf{97.4} \\
 2 & 128 & 66.9 & 67.0 & 67.0 & 63.3 & 63.3 & 63.3 & 47.8 & 47.6 & 47.6 & \textbf{96.2} & \textbf{96.2} & \textbf{96.2} \\
 2 & 256 & 63.1 & 63.1 & 63.1 & 55.4 & 55.4 & 55.4 & 39.8 & 39.8 & 39.8 & \textbf{95.9} & \textbf{95.9} & \textbf{95.9} \\
+2 & 512 & 60.0 & 59.9 & 59.9 & 62.5 & 62.6 & 62.5 & 37.9 & 38.0 & 37.5 & \textbf{94.6} & \textbf{94.5} & \textbf{94.7} \\
 \midrule
 4 & 2 & \textbf{98.4} & \textbf{98.4} & \textbf{98.4} & 96.8 & 96.8 & 96.8 & 93.3 & 93.3 & 93.3 & 98.2 & 98.2 & 98.2 \\
 4 & 4 & 87.0 & 87.0 & 87.0 & 88.6 & 87.6 & 87.6 & 94.1 & 94.1 & 94.1 & \textbf{98.0} & \textbf{98.0} & \textbf{98.0} \\
@@ -28,6 +29,7 @@ $K$ & $d$ & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 75
 4 & 64 & 51.8 & 51.8 & 51.8 & 75.3 & 75.3 & 75.3 & 89.8 & 89.9 & 89.9 & \textbf{95.1} & \textbf{95.3} & \textbf{95.3} \\
 4 & 128 & 45.8 & 46.0 & 46.0 & 67.8 & 67.8 & 67.8 & 50.7 & 51.0 & 51.0 & \textbf{94.7} & \textbf{94.8} & \textbf{94.8} \\
 4 & 256 & 40.7 & 40.7 & 40.7 & 51.3 & 51.2 & 51.2 & 27.5 & 27.4 & 27.4 & \textbf{93.5} & \textbf{93.5} & \textbf{93.5} \\
+4 & 512 & 36.4 & 36.4 & 36.4 & 48.6 & 48.5 & 48.5 & 17.6 & 17.6 & 17.6 & \textbf{91.4} & \textbf{91.4} & \textbf{91.4} \\
 \midrule
 8 & 2 & \textbf{97.8} & \textbf{97.8} & \textbf{97.8} & 96.2 & 96.5 & 96.4 & 83.1 & 83.1 & 83.1 & 97.1 & 97.1 & 97.1 \\
 8 & 4 & 83.5 & 83.5 & 83.4 & 87.8 & 87.8 & 87.9 & 90.3 & 90.3 & 90.3 & \textbf{96.6} & \textbf{96.6} & \textbf{96.6} \\
@@ -37,6 +39,7 @@ $K$ & $d$ & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 75
 8 & 64 & 37.7 & 37.6 & 37.6 & 66.8 & 66.8 & 66.8 & 86.3 & 86.3 & 86.3 & \textbf{94.8} & \textbf{94.8} & \textbf{94.8} \\
 8 & 128 & 31.5 & 31.5 & 31.5 & 54.4 & 54.4 & 54.4 & 54.4 & 54.5 & 54.5 & \textbf{93.6} & \textbf{93.8} & \textbf{93.8} \\
 8 & 256 & 26.2 & 26.2 & 26.2 & 47.9 & 47.9 & 47.9 & 26.0 & 26.0 & 26.0 & \textbf{92.5} & \textbf{92.5} & \textbf{92.5} \\
+8 & 512 & 22.0 & 22.0 & 22.0 & 33.0 & 30.3 & 30.3 & 11.7 & 11.7 & 11.7 & \textbf{89.6} & \textbf{89.6} & \textbf{89.7} \\
 \midrule
 16 & 2 & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
 16 & 4 & 81.8 & 81.8 & 81.8 & 84.8 & 84.8 & 84.8 & 89.0 & 89.0 & 89.0 & \textbf{95.1} & \textbf{95.1} & \textbf{95.1} \\
@@ -46,6 +49,7 @@ $K$ & $d$ & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 750 & 250 & 500 & 75
 16 & 64 & 27.5 & 27.5 & 27.5 & 65.6 & 65.6 & 65.6 & 83.7 & 83.8 & 83.8 & \textbf{93.2} & \textbf{93.3} & \textbf{93.3} \\
 16 & 128 & 21.6 & 21.5 & 21.5 & 52.2 & 52.2 & 52.2 & 55.3 & 55.4 & 55.4 & \textbf{91.7} & \textbf{91.6} & \textbf{91.6} \\
 16 & 256 & 17.0 & 17.0 & 17.0 & 38.9 & 38.9 & 38.8 & 29.3 & 29.3 & 29.3 & \textbf{89.3} & \textbf{89.3} & \textbf{89.3} \\
+16 & 512 & 13.5 & 13.5 & 13.5 & 29.9 & 29.9 & 29.9 & 10.4 & 10.4 & 10.4 & \textbf{86.2} & \textbf{86.0} & \textbf{86.1} \\
 \bottomrule
 \end{tabular}
 \end{table}

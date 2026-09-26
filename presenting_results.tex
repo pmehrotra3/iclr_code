@@ -10,340 +10,29 @@
 \usepackage{booktabs}
 \usepackage{graphicx}
 \usepackage[hidelinks]{hyperref}
-\usepackage{tikz}
-\usetikzlibrary{positioning,arrows.meta,calc}
 \setcounter{topnumber}{3}
 \setcounter{totalnumber}{4}
 \renewcommand{\topfraction}{0.95}
 \renewcommand{\textfraction}{0.05}
 \renewcommand{\floatpagefraction}{0.8}
 
-\title{Seed-fate prediction: full results}
+\title{Seed-outcome prediction: full results}
 \date{}
 \begin{document}
 \maketitle
 \tableofcontents
 \clearpage
-% Hand-written: build.py pastes this into presenting_results.tex, before the results.
-\section{Experimental setup}
-\begingroup
-\setlength{\parskip}{0.8em plus 0.2em}
-\setlength{\parindent}{0pt}
-
-We group our experiments into three categories.
-
-\subsection{Category 1: predicting the fate of a seed}
-
-Given a trained diffusion model and a seed $x_T$, we ask whether we can predict, without running
-the sampler, if $x_T$ ends in a hallucination and, if not, in which mode. Our approach uses the
-true score. We take points of known fate in the data space, map them back to the seed space with
-the true score, and fit a predictor on the result. We then test this predictor against the fates
-that the learned sampler actually produces.
-
-\paragraph{Data.}
-We use a mixture of $K$ Gaussians in $\mathbb{R}^d$, whose true score is known in closed form:
-\begin{equation}
-    p(x) = \sum_{i=1}^{K} \pi_i \, \mathcal{N}(\mu_i, \sigma^2 I),
-\end{equation}
-with $\sigma = 0.1$. Let $R_{99}$ be the radius of the ball containing $99\%$ of the mass of one component. We place the means
-$\mu_i$ on a sphere of radius $2\sqrt{d/2}$, at least $3R_{99}$ apart, so that these balls never
-overlap.
-
-We consider two versions of the mixture. In the \emph{unweighted} version, all modes are equally
-likely, $\pi_i = 1/K$. In the \emph{weighted} version, we draw $K$ weights from $U[0.3, 0.8]$ once
-and normalise them to sum to one, and each run assigns them to the modes in a random order. The
-most likely mode is then at most $8/3$ times as likely as the least likely one. The two versions
-are separate experiments, each with its own trained models. The weighted version tests whether
-the predictors still work when some modes attract more seeds than others.
-
-The fate of a seed is defined by where the sampler takes it. If $x_0$ lands within $R_{99}$ of a
-mean $\mu_k$, the fate of $x_T$ is mode $k$; if it lands in none of the balls, it is a
-hallucination, with label $-1$.
-
-\paragraph{Model.}
-We train a residual MLP with four blocks to predict the noise (DDIM) or the velocity (flow
-matching), and sample with $T_{\text{train}} = 500$ steps (Figure~\ref{fig:scorenet}). The width
-is 256 for $d \le 64$ and 1024 for $d \ge 128$, since the smaller network cannot resolve the
-modes in high dimension. A model that hallucinates on more than $1.5\%$ of seeds is considered
-under-trained and is retrained once with $1.7\times$ the steps. Table~\ref{tab:scorenet} lists the
-remaining training details.
-
-\paragraph{Samplers.}
-We study two generative processes, and for one of them four numerical solvers. All samplers are
-deterministic, so each seed has exactly one fate.
-
-\textit{DDIM.} A variance-preserving diffusion with a linear noise schedule, $\beta$ from
-$10^{-4}$ to $0.02$. The network predicts the noise added to a data point, and we sample with the
-deterministic DDIM update. This update is Euler's method applied to the probability-flow ODE of
-the diffusion.
-
-\textit{Flow matching.} The optimal-transport path of Lipman et al.~(2023), which moves a noise
-sample $z$ to a data point $x$ along a straight line, $x_t = (1 - t)\,z + t\,x$ for
-$t \in [0, 1]$, up to a small $\sigma_{\min} = 10^{-4}$. The network predicts the velocity
-$x - z$, and we sample by integrating it from $t = 0$ to $t = 1$ with Euler steps.
-
-\textit{Heun, RK45 and DPM-Solver++(2M).} These are not new models. They solve the same
-probability-flow ODE with the trained DDIM network, but with a more accurate solver than DDIM's
-Euler step. Heun's method is second order and uses two network evaluations per step. RK45 is a
-fixed-step Dormand--Prince method, fifth order, with six evaluations per step. DPM-Solver++(2M)
-(Lu et al., 2022) is a second-order multistep solver that works on the network's estimate of
-$x_0$ and uses one evaluation per step. All three use the same 500-step grid as DDIM. Since they
-share DDIM's network, they also share its anchors and differ only in the ground truth. Comparing
-them with DDIM therefore shows how the solver alone changes the fates.
-
-\begin{figure}[htbp]
-\centering
-\begin{tikzpicture}[
-    font=\small, >=Stealth, node distance=4mm and 5mm,
-    blk/.style={draw, rounded corners=2pt, fill=gray!8, align=center, inner sep=3pt, minimum height=8mm},
-    sum/.style={draw, circle, inner sep=0pt, minimum size=4.5mm}]
-  \node (x) {$x \in \mathbb{R}^d$};
-  \node[blk, right=of x] (lin) {Linear\\$d \to h$};
-  \node[sum, right=of lin] (plus) {$+$};
-  \node[blk, right=of plus, fill=blue!8] (res) {Residual block\\$\times 4$};
-  \node[blk, right=of res] (head) {LayerNorm, $\phi$,\\Linear $h \to d$};
-  \node[right=of head, align=center] (out) {noise (DDIM)\\or velocity (flow)};
-  \node[below=9mm of x] (t) {$t$};
-  \node[blk, right=of t] (emb) {Sinusoidal\\embedding, 128};
-  \node[blk, right=of emb] (tm) {Linear $128 \to h$,\\$\phi$};
-  \draw[->] (x) -- (lin);
-  \draw[->] (lin) -- (plus);
-  \draw[->] (plus) -- (res);
-  \draw[->] (res) -- (head);
-  \draw[->] (head) -- (out);
-  \draw[->] (t) -- (emb);
-  \draw[->] (emb) -- (tm);
-  \draw[->] (tm.east) -| (plus.south);
-\end{tikzpicture}
-
-\vspace{5mm}
-\begin{tikzpicture}[
-    font=\small, >=Stealth, node distance=5mm,
-    blk/.style={draw, rounded corners=2pt, fill=blue!8, align=center, inner sep=3pt, minimum height=7mm},
-    sum/.style={draw, circle, inner sep=0pt, minimum size=4.5mm}]
-  \node (in) {$h$};
-  \node[blk, right=of in] (ln) {LayerNorm};
-  \node[blk, right=of ln] (a1) {$\phi$};
-  \node[blk, right=of a1] (w1) {Linear $h \to h$};
-  \node[blk, right=of w1] (a2) {$\phi$};
-  \node[blk, right=of a2] (w2) {Linear $h \to h$};
-  \node[sum, right=of w2] (plus) {$+$};
-  \node[right=of plus] (o) {$h'$};
-  \draw[->] (in) -- (ln);
-  \draw[->] (ln) -- (a1);
-  \draw[->] (a1) -- (w1);
-  \draw[->] (w1) -- (a2);
-  \draw[->] (a2) -- (w2);
-  \draw[->] (w2) -- (plus);
-  \draw[->] (plus) -- (o);
-  \draw[->] ($(in.east)+(1mm,0)$) -- ++(0,8mm) -| node[pos=0.25, above] {skip connection} (plus.north);
-\end{tikzpicture}
-\caption{\textbf{Score network.} Top: full network, with hidden width $h$. Bottom: one residual
-block. $\phi$ is LeakyReLU(0.2).}
-\label{fig:scorenet}
-\end{figure}
-
-\begin{table}[htbp]
-\centering
-\small
-\caption{\textbf{Score network: architecture and training.}}
-\label{tab:scorenet}
-\begin{tabular}{ll}
-\toprule
-Hidden width                  & 256 for $d \le 64$; 1024 for $d \ge 128$ \\
-Residual blocks               & 4 \\
-Time embedding                & sinusoidal, dimension 128 \\
-Activation                    & LeakyReLU(0.2) \\
-Output                        & noise (DDIM) or velocity (flow matching) \\
-\midrule
-Training set                  & $10^5$ samples from $p$ \\
-Optimiser                     & Adam, learning rate $10^{-3}$, cosine decay to $10^{-5}$ \\
-Batch size                    & 512 \\
-Gradient clipping             & norm 1 \\
-Weight EMA                    & decay 0.999 \\
-Training steps                & $30{,}000\,(1 + d/16)(1 + K/16)$ \\
-Retraining                    & once, with $1.7\times$ the steps, if hallucination rate $> 1.5\%$ \\
-Sampling steps                & 500 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\paragraph{Anchors.}
-Anchors are the training data of the predictors: seeds with a known fate. For a budget of $b$
-anchors per mode, we sample $b$ points uniformly inside each $R_{99}$ ball, labelled with that
-mode, and $b/2$ points in the band between $R_{99}$ and $R_{99} + 2\sigma$, labelled $-1$. We then
-map all of them from $x_0$ to $x_T$ by running the sampler's ODE backwards with the true score
-(for flow matching, the true velocity), using Heun's method with $T$ steps
-(Figure~\ref{fig:pipeline}, top).
-
-\paragraph{Ground truth.}
-We draw $50{,}000 \cdot K$ test seeds from $\mathcal{N}(0, I)$ and label each by running the
-learned sampler (Figure~\ref{fig:pipeline}, bottom). Scaling with $K$ keeps the number of test
-seeds per mode fixed. The anchors come from the true score while the ground truth comes from the
-learned model, so a high score means that the true score predicts the learned model's behaviour.
-Since $T$ enters only the anchors, the ground truth is the same for every $T$.
-
-\begin{figure}[htbp]
-\centering
-\begin{tikzpicture}[
-    font=\footnotesize, >=Stealth, node distance=4mm and 5mm,
-    blk/.style={draw, rounded corners=2pt, align=center, text width=25mm, inner sep=3pt, minimum height=14mm},
-    top/.style={blk, fill=blue!8}, bot/.style={blk, fill=orange!12},
-    res/.style={blk, fill=green!10, text width=22mm}]
-  \node[top] (a1) {Sample $b$ points per mode in the $R_{99}$ ball (label $k$), $b/2$ in the band (label $-1$)};
-  \node[top, right=of a1] (a2) {Map $x_0 \to x_T$ with the \emph{true} score, $T$ steps};
-  \node[top, right=of a2] (a3) {Labelled anchors in the seed space};
-  \node[top, right=of a3] (a4) {Fit each predictor on the anchors};
-  \node[bot, below=8mm of a1] (g1) {Draw $50{,}000 \cdot K$ test seeds $x_T \sim \mathcal{N}(0, I)$};
-  \node[bot, right=of g1] (g2) {Run the \emph{learned} sampler $x_T \to x_0$, 500 steps};
-  \node[bot, right=of g2] (g3) {Fate: mode $k$ if within $R_{99}$ of $\mu_k$, else $-1$};
-  \node[bot, right=of g3] (g4) {True fates of the test seeds};
-  \node[res, right=14mm of $(a4.east)!0.5!(g4.east)$] (m) {Compare:\\accuracy,\\mode F1,\\hallucination F1};
-  \draw[->] (a1) -- (a2);
-  \draw[->] (a2) -- (a3);
-  \draw[->] (a3) -- (a4);
-  \draw[->] (g1) -- (g2);
-  \draw[->] (g2) -- (g3);
-  \draw[->] (g3) -- (g4);
-  \draw[->] (a4.east) -| node[pos=0.25, above] {predicted} (m.north);
-  \draw[->] (g4.east) -| node[pos=0.25, below] {true} (m.south);
-\end{tikzpicture}
-\caption{\textbf{Evaluation protocol.} Top: anchors are placed around each mode and mapped to the
-seed space with the true score; the predictors are fit on them. Bottom: test seeds are labelled
-by the learned sampler. The predictors are evaluated on the same test seeds.}
-\label{fig:pipeline}
-\end{figure}
-
-\paragraph{Metrics.}
-We report overall accuracy over the $K + 1$ classes, mode F1 averaged over the $K$ modes, and
-hallucination F1. Hallucinations make up only a few percent of seeds, so a predictor that never
-predicts them still reaches high accuracy; hallucination F1 measures whether it finds them. All
-results are averaged over three runs, each with new means, a new network initialisation and new
-test seeds.
-
-\paragraph{Predictors.}
-We compare four predictors. Each makes a different assumption about how fates are arranged in
-the seed space. Table~\ref{tab:fatenets} lists their settings.
-
-\textit{kNN.} Assumes that nearby seeds share a fate. A seed receives the most common label among
-its 10 nearest anchors.
-
-\textit{Altered kNN.} Assumes that a hallucination is a seed whose nearest anchors come from
-different modes. It therefore uses mode anchors only, and no hallucination anchors. Around each
-mean, we place $b/5$ points on
-each of five spheres, with radii from $0.3R_{99}$ to $1.5R_{99}$ in steps of
-$0.3R_{99}$. All points carry that
-mode's label, with weights decreasing linearly from $0.84$ to $0.2$, so that anchors closer to
-the mean count more. As before, we map them to the seed space with the true score.
-
-For a seed $x$, let $w_j$ and $y_j$ be the weight and label of its $j$-th nearest anchor,
-$j = 1, \dots, 10$. The score of mode $c$ is
-\begin{equation}
-    s_c = \frac{\sum_j w_j \, [y_j = c]}{\sum_j w_j},
-\end{equation}
-and $p = \mathrm{softmax}(s / 0.1)$. When the neighbours agree, $p$ is concentrated on one mode;
-when they disagree, it is spread out. We measure this with the confidence $1 - H(p)/\log K$,
-where $H$ is the entropy. A seed whose confidence falls below a threshold $\theta$ is a
-hallucination; otherwise it is assigned to the mode with the largest $p_c$.
-
-Since the anchors contain no hallucinations, $\theta$ cannot be learned from them. Instead, we set
-it on 5{,}000 separate seeds labelled with the true score: we try 100 values between the $0.5\%$
-and $50\%$ quantiles of their confidence and keep the one with the highest hallucination F1.
-
-\textit{Quadratic network.} Assumes that the boundaries between fates are quadratic surfaces. It
-is a linear classifier with $K + 1$ outputs on $x$ and all products $x_i x_j$ ($i \le j$).
-
-\textit{Polar network.} Assumes that the fate depends mainly on the direction of the seed, and that
-hallucinations lie on the boundaries between modes. The first holds because seeds concentrate
-near $\|x_T\| = \sqrt{d}$. We therefore write a seed as a direction $u = x / \|x\|$ and a radial
-offset $r = \|x\| - \sqrt{d}$. A linear layer maps $(u, r)$ to a vector $z$ of size 256, and the
-$K$ mode logits are a linear function of $z$, $z^2$ and $z^3$ (element-wise). The hallucination logit
-grows as the two best modes get closer, that is, near a boundary:
-\begin{equation}
-    \ell_{\text{hall}} = c + a\,r - b\,(\ell_1 - \ell_2),
-\end{equation}
-where $\ell_1$ and $\ell_2$ are the two largest mode logits and $a$, $c$ and $b > 0$ are learned.
-
-Both networks are trained with cross-entropy on all anchors, each as an ensemble of three models.
-
-\begin{table}[htbp]
-\centering
-\small
-\caption{\textbf{Predictor settings.}}
-\label{tab:fatenets}
-\begin{tabular}{lll}
-\toprule
-Predictor & Setting & Value \\
-\midrule
-kNN            & neighbours                    & 10 \\
-\midrule
-Altered kNN    & neighbours                    & 10 \\
-               & spheres per mode              & 5, radius $0.3R_{99}$ to $1.5R_{99}$ \\
-               & anchor weights                & 0.84 to 0.2, linear in the radius \\
-               & softmax temperature           & 0.1 \\
-               & threshold $\theta$            & best hallucination F1 on 5{,}000 seeds \\
-\midrule
-Quadratic      & features                      & $x_i$ and $x_i x_j$, $i \le j$ \\
-\midrule
-Polar          & hidden size, degree           & 256, 3 \\
-\midrule
-Quadratic and  & optimiser                     & AdamW, learning rate $3 \times 10^{-3}$, one-cycle \\
-polar          & weight decay, batch size      & $10^{-4}$, 2{,}048 \\
-               & epochs                        & 30 (at least 3{,}000 steps) \\
-               & ensemble                      & 3 models \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\paragraph{Experiment grid.}
-We run this protocol for every combination of sampler, mixture weights, $K$, $d$, $T$ and anchor
-budget in Table~\ref{tab:grid}; each combination is one entry of the result tables.
-
-\begin{table}[htbp]
-\centering
-\small
-\caption{\textbf{Experiment grid.}}
-\label{tab:grid}
-\begin{tabular}{ll}
-\toprule
-Sampler                         & DDIM, flow matching; Heun, RK45, DPM-Solver++(2M) (DDIM network) \\
-Mixing weights                  & uniform; random (drawn from $U[0.3, 0.8]$, normalised) \\
-Number of modes $K$             & 2, 4, 8, 16 \\
-Dimension $d$                   & 2, 4, 8, 16, 32, 64, 128, 256 ($K = 16$, $d = 2$ not run) \\
-True-score steps $T$            & 250, 500, 750 \\
-Anchors per mode $b$            & 2{,}000, 5{,}000, 10{,}000, 15{,}000, 20{,}000 \\
-Test seeds                      & $50{,}000 \cdot K$ (100{,}000 to 800{,}000) \\
-Calibration seeds               & 5{,}000 (altered kNN only) \\
-Runs                            & 3 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{Category 2}
-% TODO
-
-Claude in this category we presnet the mnist experimets thank you 
-
-You have to first descibe the autoencoder trianing the smae thing latent space and that we should how wlel it works 
-
-The question that you must have now is that you ave three output sifrts we do algoithm 1 on latestnt space apdd theat we atially do tll of this n three datasets right 
-
-(See expereminet 2 somehwer ebakc in desktop to get a sense of what we are tryin gto do 
-) 
-Next quetsion that you must you musy do is thathow we are genertaing teh visizlaiztaion and te grid to show hey how it plays in the r99 or aeveytrhin cutoofs ok and veeyrthing as categoryy 2 maye tehse sections as experiment1 and experiment -2 and put in j thank you 
-
-
-\subsection{Category 3: comparison with prior work}
-We compare our method with baselines from prior work on mode accuracy and hallucination F1.
-
-\endgroup
-\clearpage
 
 \section{Tables: overall accuracy}
-\noindent Each table reports overall seed-fate accuracy (\%, mean over 3 seeds) on the
-$(K, d)$ grid, $d \le 256$, for one anchor budget, with $T = 250, 500, 750$ as sub-columns of each
+\noindent The experimental setup, and how these tables and heatmaps are generated, are described in
+the separate document \texttt{experimental\_setup.tex}.
+
+\noindent Each table reports overall outcome accuracy (\%, mean over 3 runs) on the
+$(K, d)$ grid, $d \le 512$, for one anchor budget, with $T = 250, 500, 750$ as sub-columns of each
 predictor; the best predictor at each $T$ is in bold. Heatmaps show overall accuracy, mode F1 and
 hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2$ was not run (--).
+The last section plots the overall accuracy against $d$ for $T = 250, 500, 750$, averaged over $K$
+(band: $\pm 1$ standard deviation across $K$), for every sampler, variant and anchor budget.
 \subsection{Unweighted DDIM}
 \input{Experiment_results/tables/ddim_unweighted_a2000}
 \input{Experiment_results/tables/ddim_unweighted_a5000}
@@ -420,31 +109,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T250_a2000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T250_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T250_a5000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T250_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T250_a10000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T250_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T250_a15000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T250_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T250_a20000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T250_a20000}
 \end{figure}
 \clearpage
@@ -452,31 +141,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T500_a2000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T500_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T500_a5000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T500_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T500_a10000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T500_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T500_a15000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T500_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T500_a20000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T500_a20000}
 \end{figure}
 \clearpage
@@ -484,31 +173,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T750_a2000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T750_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T750_a5000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T750_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T750_a10000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T750_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T750_a15000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T750_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_unweighted_T750_a20000.pdf}
-\caption{\textbf{Unweighted DDIM, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DDIM, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_unweighted_T750_a20000}
 \end{figure}
 \clearpage
@@ -516,31 +205,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T250_a2000.pdf}
-\caption{\textbf{Weighted DDIM, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T250_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T250_a5000.pdf}
-\caption{\textbf{Weighted DDIM, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T250_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T250_a10000.pdf}
-\caption{\textbf{Weighted DDIM, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T250_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T250_a15000.pdf}
-\caption{\textbf{Weighted DDIM, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T250_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T250_a20000.pdf}
-\caption{\textbf{Weighted DDIM, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T250_a20000}
 \end{figure}
 \clearpage
@@ -548,31 +237,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T500_a2000.pdf}
-\caption{\textbf{Weighted DDIM, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T500_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T500_a5000.pdf}
-\caption{\textbf{Weighted DDIM, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T500_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T500_a10000.pdf}
-\caption{\textbf{Weighted DDIM, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T500_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T500_a15000.pdf}
-\caption{\textbf{Weighted DDIM, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T500_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T500_a20000.pdf}
-\caption{\textbf{Weighted DDIM, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T500_a20000}
 \end{figure}
 \clearpage
@@ -580,31 +269,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T750_a2000.pdf}
-\caption{\textbf{Weighted DDIM, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T750_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T750_a5000.pdf}
-\caption{\textbf{Weighted DDIM, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T750_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T750_a10000.pdf}
-\caption{\textbf{Weighted DDIM, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T750_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T750_a15000.pdf}
-\caption{\textbf{Weighted DDIM, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T750_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/ddim_weighted_T750_a20000.pdf}
-\caption{\textbf{Weighted DDIM, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DDIM, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:ddim_weighted_T750_a20000}
 \end{figure}
 \clearpage
@@ -612,31 +301,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T250_a2000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T250_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T250_a5000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T250_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T250_a10000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T250_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T250_a15000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T250_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T250_a20000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T250_a20000}
 \end{figure}
 \clearpage
@@ -644,31 +333,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T500_a2000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T500_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T500_a5000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T500_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T500_a10000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T500_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T500_a15000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T500_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T500_a20000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T500_a20000}
 \end{figure}
 \clearpage
@@ -676,31 +365,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T750_a2000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T750_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T750_a5000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T750_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T750_a10000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T750_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T750_a15000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T750_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_unweighted_T750_a20000.pdf}
-\caption{\textbf{Unweighted Flow matching, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Flow matching, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_unweighted_T750_a20000}
 \end{figure}
 \clearpage
@@ -708,31 +397,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T250_a2000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T250_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T250_a5000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T250_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T250_a10000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T250_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T250_a15000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T250_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T250_a20000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T250_a20000}
 \end{figure}
 \clearpage
@@ -740,31 +429,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T500_a2000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T500_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T500_a5000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T500_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T500_a10000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T500_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T500_a15000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T500_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T500_a20000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T500_a20000}
 \end{figure}
 \clearpage
@@ -772,31 +461,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T750_a2000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T750_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T750_a5000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T750_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T750_a10000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T750_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T750_a15000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T750_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/flow_weighted_T750_a20000.pdf}
-\caption{\textbf{Weighted Flow matching, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Flow matching, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:flow_weighted_T750_a20000}
 \end{figure}
 \clearpage
@@ -804,31 +493,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T250_a2000.pdf}
-\caption{\textbf{Unweighted Heun, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T250_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T250_a5000.pdf}
-\caption{\textbf{Unweighted Heun, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T250_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T250_a10000.pdf}
-\caption{\textbf{Unweighted Heun, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T250_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T250_a15000.pdf}
-\caption{\textbf{Unweighted Heun, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T250_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T250_a20000.pdf}
-\caption{\textbf{Unweighted Heun, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T250_a20000}
 \end{figure}
 \clearpage
@@ -836,31 +525,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T500_a2000.pdf}
-\caption{\textbf{Unweighted Heun, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T500_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T500_a5000.pdf}
-\caption{\textbf{Unweighted Heun, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T500_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T500_a10000.pdf}
-\caption{\textbf{Unweighted Heun, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T500_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T500_a15000.pdf}
-\caption{\textbf{Unweighted Heun, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T500_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T500_a20000.pdf}
-\caption{\textbf{Unweighted Heun, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T500_a20000}
 \end{figure}
 \clearpage
@@ -868,31 +557,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T750_a2000.pdf}
-\caption{\textbf{Unweighted Heun, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T750_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T750_a5000.pdf}
-\caption{\textbf{Unweighted Heun, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T750_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T750_a10000.pdf}
-\caption{\textbf{Unweighted Heun, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T750_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T750_a15000.pdf}
-\caption{\textbf{Unweighted Heun, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T750_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_unweighted_T750_a20000.pdf}
-\caption{\textbf{Unweighted Heun, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted Heun, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_unweighted_T750_a20000}
 \end{figure}
 \clearpage
@@ -900,31 +589,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T250_a2000.pdf}
-\caption{\textbf{Weighted Heun, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T250_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T250_a5000.pdf}
-\caption{\textbf{Weighted Heun, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T250_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T250_a10000.pdf}
-\caption{\textbf{Weighted Heun, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T250_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T250_a15000.pdf}
-\caption{\textbf{Weighted Heun, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T250_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T250_a20000.pdf}
-\caption{\textbf{Weighted Heun, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T250_a20000}
 \end{figure}
 \clearpage
@@ -932,31 +621,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T500_a2000.pdf}
-\caption{\textbf{Weighted Heun, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T500_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T500_a5000.pdf}
-\caption{\textbf{Weighted Heun, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T500_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T500_a10000.pdf}
-\caption{\textbf{Weighted Heun, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T500_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T500_a15000.pdf}
-\caption{\textbf{Weighted Heun, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T500_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T500_a20000.pdf}
-\caption{\textbf{Weighted Heun, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T500_a20000}
 \end{figure}
 \clearpage
@@ -964,31 +653,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T750_a2000.pdf}
-\caption{\textbf{Weighted Heun, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T750_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T750_a5000.pdf}
-\caption{\textbf{Weighted Heun, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T750_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T750_a10000.pdf}
-\caption{\textbf{Weighted Heun, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T750_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T750_a15000.pdf}
-\caption{\textbf{Weighted Heun, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T750_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/heun_weighted_T750_a20000.pdf}
-\caption{\textbf{Weighted Heun, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted Heun, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:heun_weighted_T750_a20000}
 \end{figure}
 \clearpage
@@ -996,31 +685,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T250_a2000.pdf}
-\caption{\textbf{Unweighted RK45, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T250_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T250_a5000.pdf}
-\caption{\textbf{Unweighted RK45, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T250_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T250_a10000.pdf}
-\caption{\textbf{Unweighted RK45, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T250_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T250_a15000.pdf}
-\caption{\textbf{Unweighted RK45, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T250_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T250_a20000.pdf}
-\caption{\textbf{Unweighted RK45, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T250_a20000}
 \end{figure}
 \clearpage
@@ -1028,31 +717,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T500_a2000.pdf}
-\caption{\textbf{Unweighted RK45, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T500_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T500_a5000.pdf}
-\caption{\textbf{Unweighted RK45, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T500_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T500_a10000.pdf}
-\caption{\textbf{Unweighted RK45, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T500_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T500_a15000.pdf}
-\caption{\textbf{Unweighted RK45, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T500_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T500_a20000.pdf}
-\caption{\textbf{Unweighted RK45, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T500_a20000}
 \end{figure}
 \clearpage
@@ -1060,31 +749,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T750_a2000.pdf}
-\caption{\textbf{Unweighted RK45, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T750_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T750_a5000.pdf}
-\caption{\textbf{Unweighted RK45, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T750_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T750_a10000.pdf}
-\caption{\textbf{Unweighted RK45, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T750_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T750_a15000.pdf}
-\caption{\textbf{Unweighted RK45, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T750_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_unweighted_T750_a20000.pdf}
-\caption{\textbf{Unweighted RK45, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted RK45, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_unweighted_T750_a20000}
 \end{figure}
 \clearpage
@@ -1092,31 +781,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T250_a2000.pdf}
-\caption{\textbf{Weighted RK45, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T250_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T250_a5000.pdf}
-\caption{\textbf{Weighted RK45, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T250_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T250_a10000.pdf}
-\caption{\textbf{Weighted RK45, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T250_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T250_a15000.pdf}
-\caption{\textbf{Weighted RK45, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T250_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T250_a20000.pdf}
-\caption{\textbf{Weighted RK45, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T250_a20000}
 \end{figure}
 \clearpage
@@ -1124,31 +813,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T500_a2000.pdf}
-\caption{\textbf{Weighted RK45, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T500_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T500_a5000.pdf}
-\caption{\textbf{Weighted RK45, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T500_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T500_a10000.pdf}
-\caption{\textbf{Weighted RK45, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T500_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T500_a15000.pdf}
-\caption{\textbf{Weighted RK45, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T500_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T500_a20000.pdf}
-\caption{\textbf{Weighted RK45, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T500_a20000}
 \end{figure}
 \clearpage
@@ -1156,31 +845,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T750_a2000.pdf}
-\caption{\textbf{Weighted RK45, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T750_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T750_a5000.pdf}
-\caption{\textbf{Weighted RK45, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T750_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T750_a10000.pdf}
-\caption{\textbf{Weighted RK45, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T750_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T750_a15000.pdf}
-\caption{\textbf{Weighted RK45, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T750_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/rk45_weighted_T750_a20000.pdf}
-\caption{\textbf{Weighted RK45, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted RK45, $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:rk45_weighted_T750_a20000}
 \end{figure}
 \clearpage
@@ -1188,31 +877,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T250_a2000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T250_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T250_a5000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T250_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T250_a10000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T250_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T250_a15000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T250_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T250_a20000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T250_a20000}
 \end{figure}
 \clearpage
@@ -1220,31 +909,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T500_a2000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T500_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T500_a5000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T500_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T500_a10000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T500_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T500_a15000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T500_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T500_a20000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T500_a20000}
 \end{figure}
 \clearpage
@@ -1252,31 +941,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T750_a2000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T750_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T750_a5000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T750_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T750_a10000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T750_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T750_a15000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T750_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_unweighted_T750_a20000.pdf}
-\caption{\textbf{Unweighted DPM-Solver++(2M), $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Unweighted DPM-Solver++(2M), $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_unweighted_T750_a20000}
 \end{figure}
 \clearpage
@@ -1284,31 +973,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T250_a2000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=250$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T250_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T250_a5000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=250$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T250_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T250_a10000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=250$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T250_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T250_a15000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=250$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T250_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T250_a20000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=250$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T250_a20000}
 \end{figure}
 \clearpage
@@ -1316,31 +1005,31 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T500_a2000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=500$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T500_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T500_a5000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=500$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T500_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T500_a10000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=500$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T500_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T500_a15000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=500$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T500_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T500_a20000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=500$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T500_a20000}
 \end{figure}
 \clearpage
@@ -1348,32 +1037,418 @@ hallucination F1 for each predictor, one per $T$ and anchor budget. $K=16$, $d=2
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T750_a2000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=750$, 2{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T750_a2000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T750_a5000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=750$, 5{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T750_a5000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T750_a10000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=750$, 10{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T750_a10000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T750_a15000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=750$, 15{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T750_a15000}
 \end{figure}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{Experiment_results/figures/dpmpp2m_weighted_T750_a20000.pdf}
-\caption{\textbf{Weighted DPM-Solver++(2M), $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 seeds) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
+\caption{\textbf{Weighted DPM-Solver++(2M), $T=750$, 20{,}000 anchors per mode.} Overall accuracy, mode F1 and hallucination F1 (\%, mean over 3 runs) per predictor (rows) on the $(K, d)$ grid; empty cells were not run.}
 \label{fig:dpmpp2m_weighted_T750_a20000}
+\end{figure}
+\clearpage
+
+\section{Accuracy against dimension}
+\subsection{Unweighted DDIM vs flow matching}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/ddim_vs_flow/anchors_2000.pdf}
+\caption{\textbf{Unweighted, DDIM vs flow matching, 2{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-ddim_vs_flow-a2000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/ddim_vs_flow/anchors_5000.pdf}
+\caption{\textbf{Unweighted, DDIM vs flow matching, 5{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-ddim_vs_flow-a5000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/ddim_vs_flow/anchors_10000.pdf}
+\caption{\textbf{Unweighted, DDIM vs flow matching, 10{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-ddim_vs_flow-a10000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/ddim_vs_flow/anchors_15000.pdf}
+\caption{\textbf{Unweighted, DDIM vs flow matching, 15{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-ddim_vs_flow-a15000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/ddim_vs_flow/anchors_20000.pdf}
+\caption{\textbf{Unweighted, DDIM vs flow matching, 20{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-ddim_vs_flow-a20000}
+\end{figure}
+\clearpage
+\subsection{Unweighted DDIM}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/ddim/anchors_2000.pdf}
+\caption{\textbf{Unweighted, DDIM, 2{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-ddim-a2000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/ddim/anchors_5000.pdf}
+\caption{\textbf{Unweighted, DDIM, 5{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-ddim-a5000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/ddim/anchors_10000.pdf}
+\caption{\textbf{Unweighted, DDIM, 10{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-ddim-a10000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/ddim/anchors_15000.pdf}
+\caption{\textbf{Unweighted, DDIM, 15{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-ddim-a15000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/ddim/anchors_20000.pdf}
+\caption{\textbf{Unweighted, DDIM, 20{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-ddim-a20000}
+\end{figure}
+\clearpage
+\subsection{Unweighted Flow matching}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/flow/anchors_2000.pdf}
+\caption{\textbf{Unweighted, Flow matching, 2{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-flow-a2000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/flow/anchors_5000.pdf}
+\caption{\textbf{Unweighted, Flow matching, 5{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-flow-a5000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/flow/anchors_10000.pdf}
+\caption{\textbf{Unweighted, Flow matching, 10{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-flow-a10000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/flow/anchors_15000.pdf}
+\caption{\textbf{Unweighted, Flow matching, 15{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-flow-a15000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/flow/anchors_20000.pdf}
+\caption{\textbf{Unweighted, Flow matching, 20{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-flow-a20000}
+\end{figure}
+\clearpage
+\subsection{Unweighted Heun}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/heun/anchors_2000.pdf}
+\caption{\textbf{Unweighted, Heun, 2{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-heun-a2000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/heun/anchors_5000.pdf}
+\caption{\textbf{Unweighted, Heun, 5{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-heun-a5000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/heun/anchors_10000.pdf}
+\caption{\textbf{Unweighted, Heun, 10{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-heun-a10000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/heun/anchors_15000.pdf}
+\caption{\textbf{Unweighted, Heun, 15{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-heun-a15000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/heun/anchors_20000.pdf}
+\caption{\textbf{Unweighted, Heun, 20{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-heun-a20000}
+\end{figure}
+\clearpage
+\subsection{Unweighted RK45}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/rk45/anchors_2000.pdf}
+\caption{\textbf{Unweighted, RK45, 2{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-rk45-a2000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/rk45/anchors_5000.pdf}
+\caption{\textbf{Unweighted, RK45, 5{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-rk45-a5000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/rk45/anchors_10000.pdf}
+\caption{\textbf{Unweighted, RK45, 10{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-rk45-a10000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/rk45/anchors_15000.pdf}
+\caption{\textbf{Unweighted, RK45, 15{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-rk45-a15000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/rk45/anchors_20000.pdf}
+\caption{\textbf{Unweighted, RK45, 20{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-rk45-a20000}
+\end{figure}
+\clearpage
+\subsection{Unweighted DPM-Solver++(2M)}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/dpmpp2m/anchors_2000.pdf}
+\caption{\textbf{Unweighted, DPM-Solver++(2M), 2{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-dpmpp2m-a2000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/dpmpp2m/anchors_5000.pdf}
+\caption{\textbf{Unweighted, DPM-Solver++(2M), 5{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-dpmpp2m-a5000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/dpmpp2m/anchors_10000.pdf}
+\caption{\textbf{Unweighted, DPM-Solver++(2M), 10{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-dpmpp2m-a10000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/dpmpp2m/anchors_15000.pdf}
+\caption{\textbf{Unweighted, DPM-Solver++(2M), 15{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-dpmpp2m-a15000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/unweighted/dpmpp2m/anchors_20000.pdf}
+\caption{\textbf{Unweighted, DPM-Solver++(2M), 20{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-unweighted-dpmpp2m-a20000}
+\end{figure}
+\clearpage
+\subsection{Weighted DDIM vs flow matching}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/ddim_vs_flow/anchors_2000.pdf}
+\caption{\textbf{Weighted, DDIM vs flow matching, 2{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-ddim_vs_flow-a2000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/ddim_vs_flow/anchors_5000.pdf}
+\caption{\textbf{Weighted, DDIM vs flow matching, 5{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-ddim_vs_flow-a5000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/ddim_vs_flow/anchors_10000.pdf}
+\caption{\textbf{Weighted, DDIM vs flow matching, 10{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-ddim_vs_flow-a10000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/ddim_vs_flow/anchors_15000.pdf}
+\caption{\textbf{Weighted, DDIM vs flow matching, 15{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-ddim_vs_flow-a15000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/ddim_vs_flow/anchors_20000.pdf}
+\caption{\textbf{Weighted, DDIM vs flow matching, 20{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-ddim_vs_flow-a20000}
+\end{figure}
+\clearpage
+\subsection{Weighted DDIM}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/ddim/anchors_2000.pdf}
+\caption{\textbf{Weighted, DDIM, 2{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-ddim-a2000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/ddim/anchors_5000.pdf}
+\caption{\textbf{Weighted, DDIM, 5{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-ddim-a5000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/ddim/anchors_10000.pdf}
+\caption{\textbf{Weighted, DDIM, 10{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-ddim-a10000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/ddim/anchors_15000.pdf}
+\caption{\textbf{Weighted, DDIM, 15{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-ddim-a15000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/ddim/anchors_20000.pdf}
+\caption{\textbf{Weighted, DDIM, 20{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-ddim-a20000}
+\end{figure}
+\clearpage
+\subsection{Weighted Flow matching}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/flow/anchors_2000.pdf}
+\caption{\textbf{Weighted, Flow matching, 2{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-flow-a2000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/flow/anchors_5000.pdf}
+\caption{\textbf{Weighted, Flow matching, 5{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-flow-a5000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/flow/anchors_10000.pdf}
+\caption{\textbf{Weighted, Flow matching, 10{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-flow-a10000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/flow/anchors_15000.pdf}
+\caption{\textbf{Weighted, Flow matching, 15{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-flow-a15000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/flow/anchors_20000.pdf}
+\caption{\textbf{Weighted, Flow matching, 20{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-flow-a20000}
+\end{figure}
+\clearpage
+\subsection{Weighted Heun}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/heun/anchors_2000.pdf}
+\caption{\textbf{Weighted, Heun, 2{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-heun-a2000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/heun/anchors_5000.pdf}
+\caption{\textbf{Weighted, Heun, 5{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-heun-a5000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/heun/anchors_10000.pdf}
+\caption{\textbf{Weighted, Heun, 10{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-heun-a10000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/heun/anchors_15000.pdf}
+\caption{\textbf{Weighted, Heun, 15{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-heun-a15000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/heun/anchors_20000.pdf}
+\caption{\textbf{Weighted, Heun, 20{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-heun-a20000}
+\end{figure}
+\clearpage
+\subsection{Weighted RK45}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/rk45/anchors_2000.pdf}
+\caption{\textbf{Weighted, RK45, 2{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-rk45-a2000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/rk45/anchors_5000.pdf}
+\caption{\textbf{Weighted, RK45, 5{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-rk45-a5000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/rk45/anchors_10000.pdf}
+\caption{\textbf{Weighted, RK45, 10{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-rk45-a10000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/rk45/anchors_15000.pdf}
+\caption{\textbf{Weighted, RK45, 15{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-rk45-a15000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/rk45/anchors_20000.pdf}
+\caption{\textbf{Weighted, RK45, 20{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-rk45-a20000}
+\end{figure}
+\clearpage
+\subsection{Weighted DPM-Solver++(2M)}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/dpmpp2m/anchors_2000.pdf}
+\caption{\textbf{Weighted, DPM-Solver++(2M), 2{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-dpmpp2m-a2000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/dpmpp2m/anchors_5000.pdf}
+\caption{\textbf{Weighted, DPM-Solver++(2M), 5{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-dpmpp2m-a5000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/dpmpp2m/anchors_10000.pdf}
+\caption{\textbf{Weighted, DPM-Solver++(2M), 10{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-dpmpp2m-a10000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/dpmpp2m/anchors_15000.pdf}
+\caption{\textbf{Weighted, DPM-Solver++(2M), 15{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-dpmpp2m-a15000}
+\end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{Experiment_results/figures2/weighted/dpmpp2m/anchors_20000.pdf}
+\caption{\textbf{Weighted, DPM-Solver++(2M), 20{,}000 anchors per mode.} Overall accuracy (\%) against $d$ for $T = 250, 500, 750$, averaged over $K$ (band: $\pm 1$ standard deviation across $K$; at $d = 2$ over $K = 2, 4, 8$).}
+\label{fig:sweep-weighted-dpmpp2m-a20000}
 \end{figure}
 \clearpage
 \end{document}
